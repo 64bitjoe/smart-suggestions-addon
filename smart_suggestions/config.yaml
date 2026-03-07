@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "1.0.8"
+version: "1.0.9"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -18,7 +18,7 @@ map:
   - config:ro
 options:
   ollama_url: "http://homeassistant.local:11434"
-  ollama_model: "llama3.2"
+  ollama_model: "llama3:latest"
   refresh_interval: 10
   max_suggestions: 7
   history_hours: 4

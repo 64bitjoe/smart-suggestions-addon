@@ -79,7 +79,7 @@ class HAClient:
         """Fetch entity history for the last N hours."""
         if not self._session:
             return {}
-        start = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
         try:
             async with self._session.get(
                 f"{HA_REST_BASE}/history/period/{start}",

@@ -63,6 +63,11 @@ class OllamaClient:
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
+                    if resp.status == 404:
+                        raise RuntimeError(
+                            f"Ollama model '{OLLAMA_MODEL}' not found (HTTP 404). "
+                            f"Run: ollama pull {OLLAMA_MODEL}"
+                        )
                     if resp.status != 200:
                         raise RuntimeError(f"Ollama HTTP {resp.status}")
                     async for line in resp.content:
