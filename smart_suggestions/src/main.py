@@ -19,6 +19,26 @@ logging.basicConfig(
 _LOGGER = logging.getLogger("smart_suggestions")
 
 _OPTIONS_FILE = "/data/options.json"
+_FEEDBACK_FILE = "/data/feedback.json"
+
+
+def _load_feedback() -> dict:
+    try:
+        with open(_FEEDBACK_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        _LOGGER.warning("Could not read feedback file: %s", e)
+        return {}
+
+
+def _save_feedback(fb: dict) -> None:
+    try:
+        with open(_FEEDBACK_FILE, "w") as f:
+            json.dump(fb, f)
+    except Exception as e:
+        _LOGGER.error("Could not save feedback: %s", e)
 
 
 def _load_options() -> dict:
@@ -44,6 +64,7 @@ class SmartSuggestionsAddon:
         self._refresh_lock = asyncio.Lock()
         self._last_suggestions: list = []
         self._running = True
+        self._feedback: dict = _load_feedback()
 
     async def _on_states_ready(self, states: dict) -> None:
         """Called by HAClient when state changes are debounced and ready."""
@@ -58,7 +79,7 @@ class SmartSuggestionsAddon:
             await self._ws_server.broadcast_status("updating")
             try:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
-                ctx = build_context(states, history)
+                ctx = build_context(states, history, self._feedback)
                 prompt = build_prompt(ctx, MAX_SUGGESTIONS)
 
                 loop = asyncio.get_running_loop()
@@ -83,6 +104,13 @@ class SmartSuggestionsAddon:
                 _LOGGER.error("Refresh cycle error: %s", e)
                 await self._ws_server.broadcast_status("error")
 
+    async def _on_feedback(self, entity_id: str, vote: str) -> None:
+        entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0})
+        entry[vote] = entry.get(vote, 0) + 1
+        _save_feedback(self._feedback)
+        self._ws_server.set_feedback(self._feedback)
+        _LOGGER.info("Feedback recorded: %s %s (net %d)", entity_id, vote, entry["up"] - entry["down"])
+
     async def run(self) -> None:
         from ollama_client import OLLAMA_URL, OLLAMA_MODEL
         _LOGGER.info(
@@ -90,6 +118,8 @@ class SmartSuggestionsAddon:
             POLL_INTERVAL, MAX_SUGGESTIONS, HISTORY_HOURS, OLLAMA_URL, OLLAMA_MODEL,
         )
 
+        self._ws_server.set_feedback(self._feedback)
+        self._ws_server.register_feedback_handler(self._on_feedback)
         await self._ws_server.start()
         await self._ollama.start()
 

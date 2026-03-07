@@ -62,6 +62,9 @@ def _last_changed_hours(state: dict) -> float:
         return 999.0
 
 
+_MEDIA_ACTIVE_STATES = {"playing", "buffering", "paused"}
+
+
 def _is_interesting(state: dict) -> bool:
     """Return True if this entity is worth including in context."""
     s = state.get("state", "")
@@ -70,6 +73,10 @@ def _is_interesting(state: dict) -> bool:
     domain = state.get("entity_id", "").split(".")[0]
     if domain in _SKIP_DOMAINS:
         return False
+
+    # Media players actively playing content always surface regardless of dormancy.
+    if domain == "media_player" and s in _MEDIA_ACTIVE_STATES:
+        return True
 
     # For actionable entities: drop ones that are inactive and haven't been
     # touched in a long time — they're dormant and just add noise.
@@ -130,9 +137,20 @@ def _extract_scene_patterns(history: dict, states: dict) -> dict:
     return patterns
 
 
-def build_context(states: dict, history: dict) -> dict:
+def _scene_time_relevance(typical_hours: list[int], current_hour: int) -> float:
+    """Score 0–10 for how close current_hour is to a scene's typical activation hours."""
+    if not typical_hours:
+        return 0.0
+    min_dist = min(min(abs(current_hour - h), 24 - abs(current_hour - h)) for h in typical_hours)
+    return round(max(0.0, 10.0 - min_dist * 1.5), 1)
+
+
+def build_context(states: dict, history: dict, feedback: dict | None = None) -> dict:
     """Assemble the full context dict for prompt building."""
+    if feedback is None:
+        feedback = {}
     now = datetime.now()
+    scene_patterns = _extract_scene_patterns(history, states)
     ctx = {
         "current_time": now.strftime("%H:%M"),
         "current_date": now.strftime("%A, %B %d %Y"),
@@ -140,7 +158,8 @@ def build_context(states: dict, history: dict) -> dict:
         "entity_states": {},
         "available_actions": [],
         "history_summaries": {},
-        "scene_patterns": _extract_scene_patterns(history, states),
+        "scene_patterns": scene_patterns,
+        "feedback_signals": feedback,
     }
 
     # Collect interesting entities, capped for token budget
@@ -161,7 +180,7 @@ def build_context(states: dict, history: dict) -> dict:
 
         # Add actionable entities to available_actions (not sensors/weather)
         if _is_actionable(domain):
-            ctx["available_actions"].append({
+            entry: dict = {
                 "entity_id": eid,
                 "name": attrs.get("friendly_name", eid),
                 "current_state": state.get("state"),
@@ -169,7 +188,15 @@ def build_context(states: dict, history: dict) -> dict:
                 "type": "automation" if domain == "automation"
                         else "script" if domain == "script"
                         else "entity",
-            })
+            }
+            if domain == "media_player" and state.get("state") in _MEDIA_ACTIVE_STATES:
+                entry["active"] = True
+            if domain == "scene" and eid in scene_patterns:
+                entry["time_relevance"] = _scene_time_relevance(
+                    scene_patterns[eid].get("typical_activation_hours", []),
+                    now.hour,
+                )
+            ctx["available_actions"].append(entry)
 
         # Add history summary if available
         if eid in history:
@@ -185,6 +212,15 @@ def build_prompt(ctx: dict, max_suggestions: int) -> str:
     actions_json = json.dumps(ctx["available_actions"], indent=2)
     history_json = json.dumps(ctx["history_summaries"], indent=2)
     scene_patterns_json = json.dumps(ctx["scene_patterns"], indent=2)
+    feedback = ctx.get("feedback_signals", {})
+    feedback_section = ""
+    if feedback:
+        feedback_json = json.dumps(feedback, indent=2)
+        feedback_section = f"""
+FEEDBACK HISTORY (user upvotes/downvotes on past suggestions):
+{feedback_json}
+Entities with more upvotes should be ranked higher. Entities with net negative votes should be ranked lower or omitted.
+"""
 
     return f"""You are a smart home assistant. Based on the current context and recent history, suggest the most relevant actions a user might want to take RIGHT NOW.
 
@@ -197,7 +233,7 @@ SCENE USAGE PATTERNS:
 The following shows which hours of the day each scene is typically activated (from history).
 Rank scenes higher when the current hour ({datetime.now().hour}) is close to their typical activation hours.
 {scene_patterns_json}
-
+{feedback_section}
 AVAILABLE ACTIONS:
 {actions_json}
 
