@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,10 +22,15 @@ _ACTION_DOMAINS = {
     "fan", "lock", "vacuum", "input_boolean", "automation", "script", "scene",
 }
 
+# States that count as "inactive" for dormancy filtering
+_INACTIVE_STATES = {"off", "idle", "paused", "standby", "closed", "locked"}
+
 # Max history entries per entity to keep context compact
 _MAX_HISTORY_ENTRIES = 6
 # Max total entities in context
 _MAX_ENTITIES = 80
+# Hours without a state change before an inactive actionable entity is considered dormant
+_DORMANCY_HOURS = 72
 
 
 def _time_period(hour: int) -> str:
@@ -44,6 +49,19 @@ def _time_period(hour: int) -> str:
     return "night"
 
 
+def _last_changed_hours(state: dict) -> float:
+    """Return hours since this entity last changed state."""
+    lc = state.get("last_changed", "")
+    if not lc:
+        return 999.0
+    try:
+        dt = datetime.fromisoformat(lc.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return (now - dt).total_seconds() / 3600
+    except (ValueError, TypeError):
+        return 999.0
+
+
 def _is_interesting(state: dict) -> bool:
     """Return True if this entity is worth including in context."""
     s = state.get("state", "")
@@ -52,6 +70,13 @@ def _is_interesting(state: dict) -> bool:
     domain = state.get("entity_id", "").split(".")[0]
     if domain in _SKIP_DOMAINS:
         return False
+
+    # For actionable entities: drop ones that are inactive and haven't been
+    # touched in a long time — they're dormant and just add noise.
+    if domain in _ACTION_DOMAINS and domain != "scene":
+        if s in _INACTIVE_STATES and _last_changed_hours(state) > _DORMANCY_HOURS:
+            return False
+
     return True
 
 
@@ -77,6 +102,34 @@ def _summarise_history(history: list) -> str:
     return " → ".join(parts)
 
 
+def _extract_scene_patterns(history: dict, states: dict) -> dict:
+    """Extract typical activation hours for scenes from their history."""
+    patterns = {}
+    for eid, hist in history.items():
+        if not eid.startswith("scene."):
+            continue
+        activation_hours: list[int] = []
+        for h in hist:
+            ts = h.get("last_changed", "")
+            if ts and h.get("state") not in ("unavailable", "unknown", ""):
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    activation_hours.append(dt.hour)
+                except (ValueError, TypeError):
+                    pass
+        if activation_hours:
+            name = (
+                states.get(eid, {})
+                .get("attributes", {})
+                .get("friendly_name", eid)
+            )
+            patterns[eid] = {
+                "name": name,
+                "typical_activation_hours": activation_hours,
+            }
+    return patterns
+
+
 def build_context(states: dict, history: dict) -> dict:
     """Assemble the full context dict for prompt building."""
     now = datetime.now()
@@ -87,6 +140,7 @@ def build_context(states: dict, history: dict) -> dict:
         "entity_states": {},
         "available_actions": [],
         "history_summaries": {},
+        "scene_patterns": _extract_scene_patterns(history, states),
     }
 
     # Collect interesting entities, capped for token budget
@@ -130,6 +184,7 @@ def build_prompt(ctx: dict, max_suggestions: int) -> str:
     entity_states_json = json.dumps(ctx["entity_states"], indent=2)
     actions_json = json.dumps(ctx["available_actions"], indent=2)
     history_json = json.dumps(ctx["history_summaries"], indent=2)
+    scene_patterns_json = json.dumps(ctx["scene_patterns"], indent=2)
 
     return f"""You are a smart home assistant. Based on the current context and recent history, suggest the most relevant actions a user might want to take RIGHT NOW.
 
@@ -137,6 +192,11 @@ CONTEXT:
 - Time: {ctx['current_time']} ({ctx['time_period']} on {ctx['current_date']})
 - Entity States: {entity_states_json}
 - Recent History (state transitions): {history_json}
+
+SCENE USAGE PATTERNS:
+The following shows which hours of the day each scene is typically activated (from history).
+Rank scenes higher when the current hour ({datetime.now().hour}) is close to their typical activation hours.
+{scene_patterns_json}
 
 AVAILABLE ACTIONS:
 {actions_json}
