@@ -50,6 +50,21 @@ def _load_options() -> dict:
         return {}
 
 
+def _remove_noops(suggestions: list, states: dict) -> list:
+    """Remove suggestions whose action already matches the entity's current state."""
+    out = []
+    for s in suggestions:
+        eid = s.get("entity_id")
+        action = s.get("action", "")
+        current = states.get(eid, {}).get("state", "") if eid else ""
+        if action == "turn_off" and current == "off":
+            continue
+        if action == "turn_on" and current == "on":
+            continue
+        out.append(s)
+    return out
+
+
 _opts = _load_options()
 REFRESH_INTERVAL = int(_opts.get("refresh_interval", 10))
 MAX_SUGGESTIONS = int(_opts.get("max_suggestions", 7))
@@ -102,7 +117,8 @@ class SmartSuggestionsAddon:
             await self._ws_server.broadcast_status("updating")
             try:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
-                ctx = build_context(states, history, self._feedback)
+                dow_history = await self._ha.fetch_dow_history()
+                ctx = build_context(states, history, self._feedback, dow_history=dow_history)
                 prompt = build_prompt(ctx, MAX_SUGGESTIONS)
 
                 loop = asyncio.get_running_loop()
@@ -112,6 +128,7 @@ class SmartSuggestionsAddon:
 
                 raw = await self._ollama.stream_generate(prompt, on_token)
                 suggestions = self._ollama.parse_suggestions(raw, MAX_SUGGESTIONS)
+                suggestions = _remove_noops(suggestions, states)
 
                 if suggestions:
                     self._last_suggestions = suggestions

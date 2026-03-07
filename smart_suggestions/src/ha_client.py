@@ -115,6 +115,45 @@ class HAClient:
         _LOGGER.info("Fetched history for %d entities", len(result))
         return result
 
+    async def fetch_dow_history(self, hour_window: int = 2, weeks_back: int = 4) -> dict[str, list]:
+        """Fetch history for the same day-of-week at ±hour_window of current time, past weeks_back weeks."""
+        if not self._session or not self._states:
+            return {}
+        from context_builder import _ACTION_DOMAINS
+        action_ids = [eid for eid in self._states if eid.split(".")[0] in _ACTION_DOMAINS]
+        if not action_ids:
+            return {}
+        now = datetime.utcnow()
+        result: dict[str, list] = {}
+        for week in range(1, weeks_back + 1):
+            target = now - timedelta(weeks=week)
+            start_dt = target - timedelta(hours=hour_window)
+            end_dt = target + timedelta(hours=hour_window)
+            start = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            for i in range(0, len(action_ids), 100):
+                chunk = action_ids[i:i + 100]
+                qs = urlencode({
+                    "filter_entity_id": ",".join(chunk),
+                    "end_time": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "minimal_response": "1",
+                    "no_attributes": "1",
+                })
+                url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}?{qs}", encoded=True)
+                try:
+                    async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        for entity_history in data:
+                            if entity_history:
+                                eid = entity_history[0].get("entity_id")
+                                if eid:
+                                    result.setdefault(eid, []).extend(entity_history)
+                except Exception as e:
+                    _LOGGER.warning("DOW history fetch failed (week -%d): %s", week, e)
+        _LOGGER.info("Fetched DOW history for %d entities", len(result))
+        return result
+
     async def write_suggestions_state(self, suggestions: list) -> None:
         """Write final suggestions to HA state via REST."""
         if not self._session:

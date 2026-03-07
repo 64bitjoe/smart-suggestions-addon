@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +32,10 @@ _MAX_HISTORY_ENTRIES = 6
 _MAX_ENTITIES = 80
 # Hours without a state change before an inactive actionable entity is considered dormant
 _DORMANCY_HOURS = 72
+
+# Stale detection thresholds
+_STALE_HOURS = 4.0
+_STALE_HOURS_NO_DOW = 6.0
 
 
 def _time_period(hour: int) -> str:
@@ -145,21 +150,87 @@ def _scene_time_relevance(typical_hours: list[int], current_hour: int) -> float:
     return round(max(0.0, 10.0 - min_dist * 1.5), 1)
 
 
-def build_context(states: dict, history: dict, feedback: dict | None = None) -> dict:
+def _count_changes(entity_id: str, history: dict) -> int:
+    """Count distinct state transitions for an entity in history."""
+    entries = history.get(entity_id, [])
+    if len(entries) <= 1:
+        return 0
+    deduped = [entries[0]]
+    for h in entries[1:]:
+        if h.get("state") != deduped[-1].get("state"):
+            deduped.append(h)
+    return len(deduped) - 1
+
+
+def _is_stale(state: dict, history: dict, dow_patterns_by_id: dict) -> bool:
+    """Return True if this entity is stale and should be excluded from available_actions."""
+    domain = state.get("entity_id", "").split(".")[0]
+    if domain == "media_player":
+        return False
+    s = state.get("state", "")
+    if s in _INACTIVE_STATES or s in ("unavailable", "unknown", ""):
+        return False
+    eid = state.get("entity_id", "")
+    hours_active = _last_changed_hours(state)
+    changes = _count_changes(eid, history)
+    pattern = dow_patterns_by_id.get(eid)
+    if pattern:
+        return hours_active > _STALE_HOURS and changes == 0 and pattern["matches_pattern"]
+    return hours_active > _STALE_HOURS_NO_DOW and changes == 0
+
+
+def build_dow_patterns(dow_history: dict, states: dict) -> list:
+    """Compute what state each entity is typically in at this time on this day (past 4 weeks)."""
+    patterns = []
+    for eid, entries in dow_history.items():
+        if not entries:
+            continue
+        state_counts = Counter(
+            e.get("state") for e in entries
+            if e.get("state") not in ("unavailable", "unknown", None, "")
+        )
+        total = sum(state_counts.values())
+        if total < 2:
+            continue
+        typical_state, count = state_counts.most_common(1)[0]
+        confidence = count / total
+        if confidence < 0.6:
+            continue
+        current = states.get(eid, {}).get("state", "")
+        name = states.get(eid, {}).get("attributes", {}).get("friendly_name", eid)
+        patterns.append({
+            "entity_id": eid,
+            "name": name,
+            "typical_state": typical_state,
+            "confidence": round(confidence, 2),
+            "sample_count": total,
+            "current_state": current,
+            "matches_pattern": current == typical_state,
+        })
+    return patterns
+
+
+def build_context(states: dict, history: dict, feedback: dict | None = None, dow_history: dict | None = None) -> dict:
     """Assemble the full context dict for prompt building."""
     if feedback is None:
         feedback = {}
     now = datetime.now()
     scene_patterns = _extract_scene_patterns(history, states)
+
+    dow_patterns_list = build_dow_patterns(dow_history or {}, states)
+    dow_patterns_by_id = {p["entity_id"]: p for p in dow_patterns_list}
+
     ctx = {
         "current_time": now.strftime("%H:%M"),
         "current_date": now.strftime("%A, %B %d %Y"),
+        "day_of_week": now.strftime("%A"),
         "time_period": _time_period(now.hour),
         "entity_states": {},
         "available_actions": [],
         "history_summaries": {},
         "scene_patterns": scene_patterns,
         "feedback_signals": feedback,
+        "dow_patterns": dow_patterns_list,
     }
 
     # Collect interesting entities, capped for token budget
@@ -180,6 +251,14 @@ def build_context(states: dict, history: dict, feedback: dict | None = None) -> 
 
         # Add actionable entities to available_actions (not sensors/weather)
         if _is_actionable(domain):
+            # Skip stale always-on entities that match their DOW pattern
+            if _is_stale(state, history, dow_patterns_by_id):
+                _LOGGER.debug("Skipping stale entity: %s", eid)
+                continue
+
+            hours_active = _last_changed_hours(state)
+            changes = _count_changes(eid, history)
+
             entry: dict = {
                 "entity_id": eid,
                 "name": attrs.get("friendly_name", eid),
@@ -188,6 +267,8 @@ def build_context(states: dict, history: dict, feedback: dict | None = None) -> 
                 "type": "automation" if domain == "automation"
                         else "script" if domain == "script"
                         else "entity",
+                "last_changed_hours": round(hours_active, 1),
+                "change_count": changes,
             }
             if domain == "media_player" and state.get("state") in _MEDIA_ACTIVE_STATES:
                 entry["active"] = True
@@ -212,6 +293,9 @@ def build_prompt(ctx: dict, max_suggestions: int) -> str:
     actions_json = json.dumps(ctx["available_actions"], indent=2)
     history_json = json.dumps(ctx["history_summaries"], indent=2)
     scene_patterns_json = json.dumps(ctx["scene_patterns"], indent=2)
+    dow_patterns_json = json.dumps(ctx.get("dow_patterns", []), indent=2)
+    day_of_week = ctx.get("day_of_week", "")
+    current_time = ctx["current_time"]
     feedback = ctx.get("feedback_signals", {})
     feedback_section = ""
     if feedback:
@@ -225,7 +309,7 @@ Entities with more upvotes should be ranked higher. Entities with net negative v
     return f"""You are a smart home assistant. Based on the current context and recent history, suggest the most relevant actions a user might want to take RIGHT NOW.
 
 CONTEXT:
-- Time: {ctx['current_time']} ({ctx['time_period']} on {ctx['current_date']})
+- Time: {current_time} ({ctx['time_period']} on {ctx['current_date']})
 - Entity States: {entity_states_json}
 - Recent History (state transitions): {history_json}
 
@@ -233,6 +317,14 @@ SCENE USAGE PATTERNS:
 The following shows which hours of the day each scene is typically activated (from history).
 Rank scenes higher when the current hour ({datetime.now().hour}) is close to their typical activation hours.
 {scene_patterns_json}
+
+DAY-OF-WEEK PATTERNS (same {day_of_week}, ±2h of {current_time}, past 4 weeks):
+{dow_patterns_json}
+
+CRITICAL: Entities where "matches_pattern" is FALSE are your HIGHEST PRIORITY suggestions —
+the user's own weekly routine says this entity should currently be in a different state than it is.
+Entities where "matches_pattern" is TRUE are behaving as expected — deprioritize them unless other
+strong signals apply (active media, scene timing, explicit user feedback).
 {feedback_section}
 AVAILABLE ACTIONS:
 {actions_json}
@@ -245,7 +337,14 @@ Return ONLY a valid JSON array (no markdown, no explanation) with up to {max_sug
 - "reason": a SHORT 1-sentence explanation of WHY this is suggested right now
 - "icon": a Material Design icon name (e.g. "mdi:lightbulb")
 - "type": one of "entity", "automation", "script"
-- "section": one of "suggested" (relevant right now), "scene" (scene activations — always use this for scene.* entities), or "stretch" (creative or fun suggestions the user might enjoy but didn't think to ask for — e.g. based on day of week, how long since last use, time of year, sunset, routines)
+- "section": one of "suggested", "scene", or "stretch"
 
-Include 1–2 "stretch" suggestions that are unexpected delights: things the user would appreciate but wouldn't normally ask for. Draw on patterns like "vacuum hasn't run in days", "it's Friday night", "sunset is soon", "this light hasn't been used in a week". All scene.* entities must use section "scene". Everything else uses "suggested" unless it's a stretch idea.
-Only suggest actions that make contextual sense. Use history to understand patterns. Do not suggest turning something off that is already off."""
+RANKING (follow strictly):
+1. DOW pattern mismatch (matches_pattern=false) → TOP PRIORITY
+2. High change_count or low last_changed_hours → recently active, likely relevant
+3. NEVER suggest an action matching current state (no turn_off on "off", no turn_on on "on")
+4. DOW pattern match → LOW priority unless strong secondary reason
+5. 1-2 "stretch" suggestions (section: "stretch"): unexpected, delightful, pattern-based (e.g. "vacuum hasn't run in days", "it's Friday night", "sunset is soon")
+6. scene.* → section "scene"; others → "suggested" or "stretch"
+
+Only suggest actions that make contextual sense. Use history to understand patterns."""
