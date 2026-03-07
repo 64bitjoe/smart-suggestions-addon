@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
+from datetime import datetime
 
 from aiohttp import web
 
 _LOGGER = logging.getLogger(__name__)
 
 PORT = 8099
+_LOG_BUFFER_SIZE = 200
 
 _DOMAIN_ICONS = {
     "light": "mdi:lightbulb",
@@ -78,18 +81,20 @@ _UI_HTML = """<!DOCTYPE html>
   .empty { text-align: center; padding: 60px 20px; color: #8E8E93; font-size: 15px; }
   .empty-icon { font-size: 44px; margin-bottom: 12px; opacity: 0.3; }
 
-  /* ── Inject panel ── */
-  .inject-wrap { margin-top: 28px; }
-  .inject-toggle {
+  /* ── Collapsible panels (shared) ── */
+  .panel-wrap { margin-top: 16px; }
+  .panel-toggle {
     width: 100%; background: rgba(255,255,255,0.08); border: none;
     border-radius: 12px; color: #fff; padding: 13px 16px;
     font-size: 15px; font-weight: 500; cursor: pointer;
     display: flex; align-items: center; justify-content: space-between;
     -webkit-tap-highlight-color: transparent;
   }
-  .inject-toggle:active { background: rgba(255,255,255,0.12); }
-  .inject-panel { margin-top: 10px; display: none; }
-  .inject-panel.open { display: block; }
+  .panel-toggle:active { background: rgba(255,255,255,0.12); }
+  .panel-body { margin-top: 10px; display: none; }
+  .panel-body.open { display: block; }
+
+  /* ── Inject panel ── */
   .inject-search {
     width: 100%; background: rgba(255,255,255,0.08);
     border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
@@ -105,6 +110,27 @@ _UI_HTML = """<!DOCTYPE html>
   .add-btn { background: rgba(0,122,255,0.18); color: #007AFF; border: none; border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; transition: background 0.15s; }
   .add-btn:active { background: rgba(0,122,255,0.35); }
   .no-results { padding: 20px; text-align: center; color: #8E8E93; font-size: 14px; }
+
+  /* ── Log panel ── */
+  .log-toolbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+  .log-clear-btn { background: none; border: none; color: #8E8E93; font-size: 12px; cursor: pointer; padding: 0; }
+  .log-clear-btn:hover { color: #fff; }
+  .log-box {
+    background: #0a0a0a; border-radius: 12px; padding: 10px 12px;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 11px; line-height: 1.65; max-height: 380px; overflow-y: auto;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .log-line { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+  .log-ts { color: #444; flex-shrink: 0; }
+  .log-lvl { flex-shrink: 0; font-weight: 700; min-width: 46px; }
+  .log-lvl.DEBUG    { color: #8E8E93; }
+  .log-lvl.INFO     { color: #34C759; }
+  .log-lvl.WARNING  { color: #FF9F0A; }
+  .log-lvl.ERROR    { color: #FF3B30; }
+  .log-lvl.CRITICAL { color: #FF3B30; }
+  .log-msg { color: #bbb; word-break: break-all; }
+  .log-empty { color: #444; font-style: italic; }
 
   /* ── Toast ── */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #2C2C2E; color: #fff; padding: 10px 18px; border-radius: 20px; font-size: 14px; font-weight: 500; transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); pointer-events: none; white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
@@ -124,14 +150,27 @@ _UI_HTML = """<!DOCTYPE html>
 
 <div id="list-container"></div>
 
-<div class="inject-wrap">
-  <button class="inject-toggle" id="inject-toggle">
+<div class="panel-wrap">
+  <button class="panel-toggle" id="inject-toggle">
     <span>+ Add entity to suggestions</span>
     <span id="inject-arrow">▶</span>
   </button>
-  <div class="inject-panel" id="inject-panel">
+  <div class="panel-body" id="inject-panel">
     <input class="inject-search" id="inject-search" type="search" placeholder="Search entities…" autocomplete="off">
     <div class="entity-list" id="entity-list"></div>
+  </div>
+</div>
+
+<div class="panel-wrap">
+  <button class="panel-toggle" id="log-toggle">
+    <span>📋 Live Logs</span>
+    <span id="log-arrow">▶</span>
+  </button>
+  <div class="panel-body" id="log-panel">
+    <div class="log-toolbar">
+      <button class="log-clear-btn" id="log-clear">Clear</button>
+    </div>
+    <div class="log-box" id="log-box"><span class="log-empty">No logs yet.</span></div>
   </div>
 </div>
 
@@ -294,6 +333,65 @@ function renderEntities(filter) {
   });
 }
 
+// ── Log panel ──
+let _logOpen = false;
+let _logs = [];
+const MAX_LOG_LINES = 200;
+
+document.getElementById('log-toggle').addEventListener('click', async () => {
+  _logOpen = !_logOpen;
+  document.getElementById('log-panel').classList.toggle('open', _logOpen);
+  document.getElementById('log-arrow').textContent = _logOpen ? '▼' : '▶';
+  if (_logOpen && _logs.length === 0) {
+    await loadLogs();
+  }
+  if (_logOpen) renderLogs();
+});
+
+document.getElementById('log-clear').addEventListener('click', () => {
+  _logs = [];
+  renderLogs();
+});
+
+async function loadLogs() {
+  try {
+    const r = await fetch(BASE + '/logs');
+    _logs = await r.json();
+  } catch { _logs = []; }
+}
+
+function escHtml(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function makeLogLine(entry) {
+  return `<div class="log-line"><span class="log-ts">${entry.ts}</span><span class="log-lvl ${entry.level}">${entry.level}</span><span class="log-msg">${escHtml(entry.msg)}</span></div>`;
+}
+
+function renderLogs() {
+  const box = document.getElementById('log-box');
+  if (!_logs.length) {
+    box.innerHTML = '<span class="log-empty">No logs yet.</span>';
+    return;
+  }
+  box.innerHTML = _logs.map(makeLogLine).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+function appendLog(entry) {
+  _logs.push(entry);
+  if (_logs.length > MAX_LOG_LINES) _logs.shift();
+  if (!_logOpen) return;
+  const box = document.getElementById('log-box');
+  // Remove placeholder if present
+  const empty = box.querySelector('.log-empty');
+  if (empty) empty.remove();
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.insertAdjacentHTML('beforeend', makeLogLine(entry));
+  while (box.children.length > MAX_LOG_LINES) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
 function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -310,6 +408,7 @@ function connectWS() {
     let msg; try { msg = JSON.parse(evt.data); } catch { return; }
     if (msg.type === 'suggestions') { _suggestions = Array.isArray(msg.data) ? msg.data : []; _status = 'ready'; render(); }
     else if (msg.type === 'status') { _status = msg.state || 'idle'; render(); }
+    else if (msg.type === 'log') { appendLog(msg); }
   });
   ws.addEventListener('close', () => {
     document.getElementById('status-dot').className = 'status-dot';
@@ -337,6 +436,7 @@ class WSServer:
         self._app.router.add_post("/refresh", self._refresh_handler)
         self._app.router.add_get("/entities", self._entities_handler)
         self._app.router.add_post("/inject", self._inject_handler)
+        self._app.router.add_get("/logs", self._logs_handler)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
         self._last_status: str = "idle"
@@ -344,6 +444,7 @@ class WSServer:
         self._known_entities: list = []
         self._feedback_cb = None
         self._refresh_cb = None
+        self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
 
     def register_feedback_handler(self, cb) -> None:
         self._feedback_cb = cb
@@ -397,6 +498,9 @@ class WSServer:
 
     async def _entities_handler(self, request: web.Request) -> web.Response:
         return web.json_response(self._known_entities)
+
+    async def _logs_handler(self, request: web.Request) -> web.Response:
+        return web.json_response(list(self._log_buffer))
 
     async def _inject_handler(self, request: web.Request) -> web.Response:
         try:
@@ -475,3 +579,8 @@ class WSServer:
     async def broadcast_status(self, state: str) -> None:
         self._last_status = state
         await self.broadcast({"type": "status", "state": state})
+
+    async def broadcast_log(self, level: str, msg: str) -> None:
+        entry = {"type": "log", "ts": datetime.now().strftime("%H:%M:%S"), "level": level, "msg": msg}
+        self._log_buffer.append(entry)
+        await self.broadcast(entry)

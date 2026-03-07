@@ -71,6 +71,21 @@ MAX_SUGGESTIONS = int(_opts.get("max_suggestions", 7))
 HISTORY_HOURS = int(_opts.get("history_hours", 4))
 
 
+class _WSLogHandler(logging.Handler):
+    """Forwards log records to the WebSocket UI log panel."""
+
+    def __init__(self, ws_server: WSServer) -> None:
+        super().__init__()
+        self._ws = ws_server
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._ws.broadcast_log(record.levelname, self.format(record)))
+        except Exception:
+            pass  # Never raise from a log handler
+
+
 class SmartSuggestionsAddon:
     def __init__(self) -> None:
         self._ws_server = WSServer()
@@ -164,6 +179,12 @@ class SmartSuggestionsAddon:
         self._ws_server.register_feedback_handler(self._on_feedback)
         self._ws_server.register_refresh_handler(self._trigger_refresh)
         await self._ws_server.start()
+
+        # Stream all log output to the web UI log panel
+        log_handler = _WSLogHandler(self._ws_server)
+        log_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+        log_handler.setLevel(logging.DEBUG)
+        logging.getLogger().addHandler(log_handler)
         await self._ollama.start()
 
         self._ha = HAClient(
