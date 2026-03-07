@@ -27,4 +27,6 @@ schema:
   refresh_interval: int
   max_suggestions: int
   history_hours: int
-image: ghcr.io/64bitjoe/smart-suggestions-addon/{arch}
+# image: ghcr.io/64bitjoe/smart-suggestions-addon/{arch}
+# Uncomment the image line above once GitHub Actions builds are set up.
+# Until then, Supervisor builds locally from the Dockerfile.
