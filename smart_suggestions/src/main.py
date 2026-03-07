@@ -7,7 +7,7 @@ import logging
 import os
 import signal
 
-from context_builder import build_context, build_prompt
+from context_builder import build_context, build_prompt, _ACTION_DOMAINS
 from ha_client import HAClient, POLL_INTERVAL, REFRESH_INTERVAL as DEFAULT_REFRESH_INTERVAL
 from ollama_client import OllamaClient
 from ws_server import WSServer
@@ -70,6 +70,20 @@ class SmartSuggestionsAddon:
     async def _on_states_ready(self, states: dict) -> None:
         """Called by HAClient when state changes are debounced and ready."""
         self._last_states = states
+        # Populate inject panel with ALL actionable entities (no dormancy filter)
+        all_entities = [
+            {
+                "entity_id": eid,
+                "name": s.get("attributes", {}).get("friendly_name", eid),
+                "domain": eid.split(".")[0],
+                "current_state": s.get("state"),
+            }
+            for eid, s in states.items()
+            if eid.split(".")[0] in _ACTION_DOMAINS
+            and s.get("state") not in ("unavailable", "unknown", "")
+        ]
+        all_entities.sort(key=lambda e: e["name"].lower())
+        self._ws_server.set_known_entities(all_entities)
         await self._run_refresh_cycle(states)
 
     async def _trigger_refresh(self) -> None:
@@ -89,7 +103,6 @@ class SmartSuggestionsAddon:
             try:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
                 ctx = build_context(states, history, self._feedback)
-                self._ws_server.set_known_entities(ctx["available_actions"])
                 prompt = build_prompt(ctx, MAX_SUGGESTIONS)
 
                 loop = asyncio.get_running_loop()

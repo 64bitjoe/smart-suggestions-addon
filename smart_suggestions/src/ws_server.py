@@ -263,7 +263,7 @@ function renderEntities(filter) {
   const q = filter.toLowerCase();
   const matches = _entities
     .filter(e => !q || e.entity_id.includes(q) || (e.name || '').toLowerCase().includes(q))
-    .slice(0, 30);
+    .slice(0, 150);
   const el = document.getElementById('entity-list');
   if (!matches.length) {
     el.innerHTML = '<div class="no-results">No entities found</div>';
