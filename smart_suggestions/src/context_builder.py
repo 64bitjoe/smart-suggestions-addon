@@ -245,5 +245,7 @@ Return ONLY a valid JSON array (no markdown, no explanation) with up to {max_sug
 - "reason": a SHORT 1-sentence explanation of WHY this is suggested right now
 - "icon": a Material Design icon name (e.g. "mdi:lightbulb")
 - "type": one of "entity", "automation", "script"
+- "section": one of "suggested" (relevant right now), "scene" (scene activations — always use this for scene.* entities), or "stretch" (creative or fun suggestions the user might enjoy but didn't think to ask for — e.g. based on day of week, how long since last use, time of year, sunset, routines)
 
-Only suggest actions that make contextual sense RIGHT NOW. Use history to understand patterns. Do not suggest turning something off that is already off."""
+Include 1–2 "stretch" suggestions that are unexpected delights: things the user would appreciate but wouldn't normally ask for. Draw on patterns like "vacuum hasn't run in days", "it's Friday night", "sunset is soon", "this light hasn't been used in a week". All scene.* entities must use section "scene". Everything else uses "suggested" unless it's a stretch idea.
+Only suggest actions that make contextual sense. Use history to understand patterns. Do not suggest turning something off that is already off."""

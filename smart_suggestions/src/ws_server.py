@@ -11,6 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PORT = 8099
 
+
 _UI_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -26,12 +27,7 @@ _UI_HTML = """<!DOCTYPE html>
     min-height: 100vh;
     padding: 20px 16px 40px;
   }
-  .header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 6px;
-  }
+  .header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
   .header-icon {
     width: 36px; height: 36px;
     background: #007AFF;
@@ -41,92 +37,64 @@ _UI_HTML = """<!DOCTYPE html>
   }
   h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }
   .meta {
-    font-size: 13px;
-    color: #8E8E93;
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    font-size: 13px; color: #8E8E93;
+    margin-bottom: 24px;
+    display: flex; align-items: center; gap: 8px;
   }
   .status-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: #34C759;
-    display: inline-block;
-    flex-shrink: 0;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #34C759; display: inline-block; flex-shrink: 0;
   }
   .status-dot.updating { background: #FF9F0A; animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .list { display: flex; flex-direction: column; gap: 1px; background: rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden; }
+
+  .section-label {
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.07em; color: #8E8E93;
+    padding: 16px 4px 8px;
+  }
+  .section-label:first-child { padding-top: 0; }
+
+  .list { display: flex; flex-direction: column; gap: 1px; background: rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden; margin-bottom: 4px; }
   .card {
     background: #1C1C1E;
     padding: 14px 16px;
-    display: flex;
-    align-items: center;
-    gap: 14px;
+    display: flex; align-items: center; gap: 14px;
   }
   .card-icon {
-    width: 40px; height: 40px;
-    border-radius: 10px;
+    width: 40px; height: 40px; border-radius: 10px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 20px;
-    flex-shrink: 0;
-    background: #2C2C2E;
+    font-size: 20px; flex-shrink: 0; background: #2C2C2E;
   }
   .card-body { flex: 1; min-width: 0; }
   .card-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card-reason { font-size: 13px; color: #8E8E93; margin-top: 3px; line-height: 1.4; }
-  .vote-area {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-  }
+  .vote-area { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .vote-btn {
-    width: 36px; height: 36px;
-    border: none;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.08);
-    color: #fff;
-    font-size: 17px;
-    cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border: none; border-radius: 50%;
+    background: rgba(255,255,255,0.08); color: #fff; font-size: 17px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: background 0.15s, transform 0.1s;
     -webkit-tap-highlight-color: transparent;
   }
   .vote-btn:active { transform: scale(0.88); }
-  .vote-btn.up:active, .vote-btn.up.voted { background: rgba(52,199,89,0.25); }
-  .vote-btn.down:active, .vote-btn.down.voted { background: rgba(255,59,48,0.25); }
-  .score {
-    font-size: 13px;
-    font-weight: 600;
-    min-width: 20px;
-    text-align: center;
-    color: #8E8E93;
-  }
+  .vote-btn.up.voted { background: rgba(52,199,89,0.25); }
+  .vote-btn.down.voted { background: rgba(255,59,48,0.25); }
+  .score { font-size: 13px; font-weight: 600; min-width: 20px; text-align: center; color: #8E8E93; }
   .score.positive { color: #34C759; }
   .score.negative { color: #FF3B30; }
-  .empty {
-    text-align: center;
-    padding: 60px 20px;
-    color: #8E8E93;
-    font-size: 15px;
-  }
+
+  .empty { text-align: center; padding: 60px 20px; color: #8E8E93; font-size: 15px; }
   .empty-icon { font-size: 44px; margin-bottom: 12px; opacity: 0.3; }
+
   .toast {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
+    position: fixed; bottom: 24px; left: 50%;
     transform: translateX(-50%) translateY(80px);
-    background: #2C2C2E;
-    color: #fff;
-    padding: 10px 18px;
-    border-radius: 20px;
-    font-size: 14px;
-    font-weight: 500;
+    background: #2C2C2E; color: #fff;
+    padding: 10px 18px; border-radius: 20px;
+    font-size: 14px; font-weight: 500;
     transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
-    pointer-events: none;
-    white-space: nowrap;
+    pointer-events: none; white-space: nowrap;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   }
   .toast.show { transform: translateX(-50%) translateY(0); }
@@ -153,8 +121,7 @@ let _status = 'idle';
 
 function net(eid) {
   const f = _feedback[eid];
-  if (!f) return 0;
-  return (f.up || 0) - (f.down || 0);
+  return f ? (f.up || 0) - (f.down || 0) : 0;
 }
 
 function domainEmoji(eid) {
@@ -165,6 +132,25 @@ function domainEmoji(eid) {
     scene: '🎨', automation: '🤖', script: '📜', input_boolean: '🔘',
   };
   return map[d] || '⚙️';
+}
+
+function makeRow(s, i) {
+  const score = net(s.entity_id);
+  const scoreClass = score > 0 ? 'positive' : score < 0 ? 'negative' : '';
+  return `
+    <div class="card" data-index="${i}">
+      <div class="card-icon">${domainEmoji(s.entity_id)}</div>
+      <div class="card-body">
+        <div class="card-name">${s.name || s.entity_id || ''}</div>
+        <div class="card-reason">${s.reason || ''}</div>
+      </div>
+      <div class="vote-area">
+        <button class="vote-btn up" data-eid="${s.entity_id}" data-vote="up" title="Thumbs up">👍</button>
+        <span class="score ${scoreClass}">${score > 0 ? '+' + score : score}</span>
+        <button class="vote-btn down" data-eid="${s.entity_id}" data-vote="down" title="Thumbs down">👎</button>
+      </div>
+    </div>
+  `;
 }
 
 function render() {
@@ -181,26 +167,27 @@ function render() {
     return;
   }
 
-  const rows = _suggestions.map((s, i) => {
-    const score = net(s.entity_id);
-    const scoreClass = score > 0 ? 'positive' : score < 0 ? 'negative' : '';
-    return `
-      <div class="card" data-index="${i}">
-        <div class="card-icon">${domainEmoji(s.entity_id)}</div>
-        <div class="card-body">
-          <div class="card-name">${s.name || s.entity_id || ''}</div>
-          <div class="card-reason">${s.reason || ''}</div>
-        </div>
-        <div class="vote-area">
-          <button class="vote-btn up" data-eid="${s.entity_id}" data-vote="up" title="Thumbs up">👍</button>
-          <span class="score ${scoreClass}">${score > 0 ? '+' + score : score}</span>
-          <button class="vote-btn down" data-eid="${s.entity_id}" data-vote="down" title="Thumbs down">👎</button>
-        </div>
-      </div>
-    `;
-  }).join('');
+  const buckets = { suggested: [], scene: [], stretch: [] };
+  _suggestions.forEach((s, i) => {
+    const domain = (s.entity_id || '').split('.')[0];
+    const key = (s.section && buckets[s.section]) ? s.section : domain === 'scene' ? 'scene' : 'suggested';
+    buckets[key].push({ s, i });
+  });
 
-  container.innerHTML = '<div class="list">' + rows + '</div>';
+  const sectionDefs = [
+    { key: 'suggested', label: 'Suggested for You' },
+    { key: 'scene',     label: 'Scenes' },
+    { key: 'stretch',   label: '✨ Worth Trying' },
+  ];
+
+  const html = sectionDefs
+    .filter(({ key }) => buckets[key].length)
+    .map(({ key, label }) =>
+      `<div class="section-label">${label}</div>` +
+      `<div class="list">${buckets[key].map(({ s, i }) => makeRow(s, i)).join('')}</div>`
+    ).join('');
+
+  container.innerHTML = html;
 
   container.querySelectorAll('.vote-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
