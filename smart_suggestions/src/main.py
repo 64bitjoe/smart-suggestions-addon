@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -17,9 +18,22 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger("smart_suggestions")
 
-REFRESH_INTERVAL = int(os.environ.get("REFRESH_INTERVAL", "10"))
-MAX_SUGGESTIONS = int(os.environ.get("MAX_SUGGESTIONS", "7"))
-HISTORY_HOURS = int(os.environ.get("HISTORY_HOURS", "4"))
+_OPTIONS_FILE = "/data/options.json"
+
+
+def _load_options() -> dict:
+    try:
+        with open(_OPTIONS_FILE) as f:
+            return json.load(f)
+    except Exception as e:
+        _LOGGER.warning("Could not read %s: %s — using defaults", _OPTIONS_FILE, e)
+        return {}
+
+
+_opts = _load_options()
+REFRESH_INTERVAL = int(_opts.get("refresh_interval", 10))
+MAX_SUGGESTIONS = int(_opts.get("max_suggestions", 7))
+HISTORY_HOURS = int(_opts.get("history_hours", 4))
 
 
 class SmartSuggestionsAddon:

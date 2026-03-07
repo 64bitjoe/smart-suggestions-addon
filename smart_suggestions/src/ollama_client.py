@@ -4,15 +4,26 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Callable
 
 import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://homeassistant.local:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+_OPTIONS_FILE = "/data/options.json"
+
+
+def _load_options() -> dict:
+    try:
+        with open(_OPTIONS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+_opts = _load_options()
+OLLAMA_URL = _opts.get("ollama_url", "http://homeassistant.local:11434")
+OLLAMA_MODEL = _opts.get("ollama_model", "llama3.2")
 
 
 class OllamaClient:
