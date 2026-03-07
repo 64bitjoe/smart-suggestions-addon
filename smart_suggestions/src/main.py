@@ -8,7 +8,7 @@ import os
 import signal
 
 from context_builder import build_context, build_prompt
-from ha_client import HAClient, POLL_INTERVAL
+from ha_client import HAClient, POLL_INTERVAL, REFRESH_INTERVAL as DEFAULT_REFRESH_INTERVAL
 from ollama_client import OllamaClient
 from ws_server import WSServer
 
@@ -93,7 +93,10 @@ class SmartSuggestionsAddon:
         await self._ws_server.start()
         await self._ollama.start()
 
-        self._ha = HAClient(on_states_ready=self._on_states_ready)
+        self._ha = HAClient(
+            on_states_ready=self._on_states_ready,
+            refresh_interval_seconds=REFRESH_INTERVAL * 60,
+        )
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):

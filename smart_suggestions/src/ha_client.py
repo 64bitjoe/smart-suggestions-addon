@@ -14,17 +14,20 @@ _LOGGER = logging.getLogger(__name__)
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 HA_REST_BASE = "http://supervisor/core/api"
 
-POLL_INTERVAL = 30  # seconds between state polls
+POLL_INTERVAL = 30          # seconds between state polls (keeps _states fresh)
+REFRESH_INTERVAL = 600      # seconds between Ollama refresh cycles (default 10 min)
 
 
 class HAClient:
     """Polls HA states via REST and fetches history."""
 
-    def __init__(self, on_states_ready: Callable) -> None:
+    def __init__(self, on_states_ready: Callable, refresh_interval_seconds: int = REFRESH_INTERVAL) -> None:
         self._on_states_ready = on_states_ready
+        self._refresh_interval = refresh_interval_seconds
         self._session: aiohttp.ClientSession | None = None
         self._states: dict = {}
         self._running = False
+        self._last_refresh: float = 0.0
 
     async def start(self) -> None:
         if not SUPERVISOR_TOKEN:
@@ -37,7 +40,8 @@ class HAClient:
         )
         self._running = True
 
-        # Initial fetch then poll loop
+        # Poll states frequently to keep _states fresh; only trigger Ollama
+        # refresh every refresh_interval seconds.
         while self._running:
             await self._fetch_states()
             await asyncio.sleep(POLL_INTERVAL)
@@ -48,7 +52,8 @@ class HAClient:
             await self._session.close()
 
     async def _fetch_states(self) -> None:
-        """Fetch all current entity states from HA REST API."""
+        """Fetch all current entity states and trigger Ollama refresh if due."""
+        import time
         try:
             async with self._session.get(
                 f"{HA_REST_BASE}/states",
@@ -59,10 +64,16 @@ class HAClient:
                     return
                 states_list = await resp.json()
                 self._states = {s["entity_id"]: s for s in states_list}
-                _LOGGER.info("Fetched %d entity states", len(self._states))
-                await self._on_states_ready(self._states)
+                _LOGGER.debug("Fetched %d entity states", len(self._states))
         except Exception as e:
             _LOGGER.error("Failed to fetch states: %s", e)
+            return
+
+        now = time.monotonic()
+        if now - self._last_refresh >= self._refresh_interval:
+            self._last_refresh = now
+            _LOGGER.info("Triggering refresh cycle (%d states)", len(self._states))
+            await self._on_states_ready(self._states)
 
     async def fetch_history(self, hours: int) -> dict[str, list]:
         """Fetch entity history for the last N hours."""
