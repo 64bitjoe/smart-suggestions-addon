@@ -8,7 +8,7 @@ import os
 import signal
 
 from context_builder import build_context, build_prompt
-from ha_client import HAClient
+from ha_client import HAClient, POLL_INTERVAL
 from ollama_client import OllamaClient
 from ws_server import WSServer
 
@@ -83,18 +83,11 @@ class SmartSuggestionsAddon:
                 _LOGGER.error("Refresh cycle error: %s", e)
                 await self._ws_server.broadcast_status("error")
 
-    async def _timer_loop(self) -> None:
-        """Periodic refresh independent of state changes."""
-        while self._running:
-            await asyncio.sleep(REFRESH_INTERVAL * 60)
-            if self._ha and self._ha._states:
-                await self._run_refresh_cycle(self._ha._states)
-
     async def run(self) -> None:
         from ollama_client import OLLAMA_URL, OLLAMA_MODEL
         _LOGGER.info(
-            "Smart Suggestions starting (refresh=%dm, max=%d, history=%dh, ollama=%s, model=%s)",
-            REFRESH_INTERVAL, MAX_SUGGESTIONS, HISTORY_HOURS, OLLAMA_URL, OLLAMA_MODEL,
+            "Smart Suggestions starting (refresh every %ds, max=%d, history=%dh, ollama=%s, model=%s)",
+            POLL_INTERVAL, MAX_SUGGESTIONS, HISTORY_HOURS, OLLAMA_URL, OLLAMA_MODEL,
         )
 
         await self._ws_server.start()
@@ -106,10 +99,7 @@ class SmartSuggestionsAddon:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
-        await asyncio.gather(
-            self._ha.start(),
-            self._timer_loop(),
-        )
+        await self._ha.start()
 
     async def _shutdown(self) -> None:
         _LOGGER.info("Shutting down...")
