@@ -14,7 +14,7 @@ ingress_port: 8099
 homeassistant_api: true
 auth_api: true
 map:
-  - config:r
+  - config:ro
 options:
   ollama_url: "http://homeassistant.local:11434"
   ollama_model: "llama3.2"

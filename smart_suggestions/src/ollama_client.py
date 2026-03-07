@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import AsyncGenerator, Callable
+from typing import Callable
 
 import aiohttp
 

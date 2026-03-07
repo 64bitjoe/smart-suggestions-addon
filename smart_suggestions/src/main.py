@@ -44,19 +44,13 @@ class SmartSuggestionsAddon:
             await self._ws_server.broadcast_status("updating")
             try:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
-                ctx = build_context(states, history, MAX_SUGGESTIONS)
+                ctx = build_context(states, history)
                 prompt = build_prompt(ctx, MAX_SUGGESTIONS)
 
-                tokens_sent = False
+                loop = asyncio.get_running_loop()
 
                 def on_token(token: str) -> None:
-                    nonlocal tokens_sent
-                    tokens_sent = True
-                    asyncio.get_event_loop().call_soon_threadsafe(
-                        lambda: asyncio.ensure_future(
-                            self._ws_server.broadcast_token(token)
-                        )
-                    )
+                    loop.create_task(self._ws_server.broadcast_token(token))
 
                 raw = await self._ollama.stream_generate(prompt, on_token)
                 suggestions = self._ollama.parse_suggestions(raw, MAX_SUGGESTIONS)
@@ -93,9 +87,9 @@ class SmartSuggestionsAddon:
 
         self._ha = HAClient(on_states_ready=self._on_states_ready)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self._shutdown()))
+            loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
         await asyncio.gather(
             self._ha.start(),
@@ -108,7 +102,6 @@ class SmartSuggestionsAddon:
         await self._ha.stop()
         await self._ollama.stop()
         await self._ws_server.stop()
-        asyncio.get_event_loop().stop()
 
 
 if __name__ == "__main__":

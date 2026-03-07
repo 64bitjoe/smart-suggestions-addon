@@ -10,8 +10,11 @@ _LOGGER = logging.getLogger(__name__)
 # Domains that are usually uninteresting for suggestions
 _SKIP_DOMAINS = {
     "sun", "zone", "updater", "persistent_notification", "person",
-    "device_tracker", "weather", "sensor",  # keep sensor out of actions
+    "device_tracker",
 }
+
+# Domains that appear in entity_states (context) but NOT in available_actions
+_CONTEXT_ONLY_DOMAINS = {"sensor", "weather", "binary_sensor"}
 
 # Domains that ARE interesting as potential actions
 _ACTION_DOMAINS = {
@@ -52,6 +55,10 @@ def _is_interesting(state: dict) -> bool:
     return True
 
 
+def _is_actionable(domain: str) -> bool:
+    return domain in _ACTION_DOMAINS
+
+
 def _summarise_history(history: list) -> str:
     """Turn a list of state history dicts into a compact natural language snippet."""
     if not history:
@@ -70,7 +77,7 @@ def _summarise_history(history: list) -> str:
     return " → ".join(parts)
 
 
-def build_context(states: dict, history: dict, max_suggestions: int) -> dict:
+def build_context(states: dict, history: dict) -> dict:
     """Assemble the full context dict for prompt building."""
     now = datetime.now()
     ctx = {
@@ -98,8 +105,8 @@ def build_context(states: dict, history: dict, max_suggestions: int) -> dict:
             "domain": domain,
         }
 
-        # Add actionable entities to available_actions
-        if domain in _ACTION_DOMAINS:
+        # Add actionable entities to available_actions (not sensors/weather)
+        if _is_actionable(domain):
             ctx["available_actions"].append({
                 "entity_id": eid,
                 "name": attrs.get("friendly_name", eid),
