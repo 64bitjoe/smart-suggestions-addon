@@ -1,0 +1,30 @@
+name: Smart Suggestions
+version: "1.0.0"
+slug: smart_suggestions
+description: AI-powered contextual home automation suggestions using local Ollama
+url: https://github.com/64bitjoe/smart-suggestions-addon
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+ingress: true
+ingress_port: 8099
+homeassistant_api: true
+auth_api: true
+map:
+  - config:r
+options:
+  ollama_url: "http://homeassistant.local:11434"
+  ollama_model: "llama3.2"
+  refresh_interval: 10
+  max_suggestions: 7
+  history_hours: 4
+schema:
+  ollama_url: str
+  ollama_model: str
+  refresh_interval: int
+  max_suggestions: int
+  history_hours: int
+image: ghcr.io/64bitjoe/smart-suggestions-addon/{arch}
