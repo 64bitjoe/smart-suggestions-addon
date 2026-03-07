@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 import aiohttp
+import yarl
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,13 +80,14 @@ class HAClient:
         """Fetch entity history via HA REST API."""
         if not self._session:
             return {}
-        end_time = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        start_time = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Use yarl.URL with encoded=True so colons in the ISO timestamp aren't
+        # percent-encoded by aiohttp, which causes HA to return HTTP 400.
+        url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}", encoded=True)
         try:
             async with self._session.get(
-                f"{HA_REST_BASE}/history/period",
+                url,
                 params={
-                    "end_time": end_time,
                     "significant_changes_only": "1",
                     "minimal_response": "1",
                     "no_attributes": "1",
