@@ -78,37 +78,42 @@ class HAClient:
             await self._on_states_ready(self._states)
 
     async def fetch_history(self, hours: int) -> dict[str, list]:
-        """Fetch entity history via HA REST API."""
-        if not self._session:
+        """Fetch entity history via HA REST API, batched to avoid URL length limits."""
+        if not self._session or not self._states:
             return {}
+
         start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # Build the full URL as a plain string so yarl.URL(encoded=True) never
-        # re-encodes the colons in the ISO timestamp (which causes HA 400).
-        # Passing params= to session.get() triggers aiohttp URL rebuilding that
-        # ignores encoded=True, so we embed the query string in the URL directly.
-        qs = urlencode({"significant_changes_only": "1", "minimal_response": "1", "no_attributes": "1"})
-        url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}?{qs}", encoded=True)
-        try:
-            async with self._session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status != 200:
-                    _LOGGER.warning("History API returned HTTP %s — body: %s",
-                                    resp.status, await resp.text())
-                    return {}
-                data = await resp.json()
-                result = {}
-                for entity_history in data:
-                    if entity_history:
-                        eid = entity_history[0].get("entity_id")
-                        if eid:
-                            result[eid] = entity_history
-                _LOGGER.info("Fetched history for %d entities", len(result))
-                return result
-        except Exception as e:
-            _LOGGER.warning("Failed to fetch history: %s", e)
-            return {}
+        all_ids = list(self._states.keys())
+        # Batch into chunks of 100 to stay well under URL length limits
+        chunk_size = 100
+        chunks = [all_ids[i:i + chunk_size] for i in range(0, len(all_ids), chunk_size)]
+
+        result: dict[str, list] = {}
+        for chunk in chunks:
+            qs = urlencode({
+                "filter_entity_id": ",".join(chunk),
+                "significant_changes_only": "1",
+                "minimal_response": "1",
+                "no_attributes": "1",
+            })
+            url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}?{qs}", encoded=True)
+            try:
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    if resp.status != 200:
+                        _LOGGER.warning("History API returned HTTP %s — body: %s",
+                                        resp.status, await resp.text())
+                        continue
+                    data = await resp.json()
+                    for entity_history in data:
+                        if entity_history:
+                            eid = entity_history[0].get("entity_id")
+                            if eid:
+                                result[eid] = entity_history
+            except Exception as e:
+                _LOGGER.warning("Failed to fetch history chunk: %s", e)
+
+        _LOGGER.info("Fetched history for %d entities", len(result))
+        return result
 
     async def write_suggestions_state(self, suggestions: list) -> None:
         """Write final suggestions to HA state via REST."""
