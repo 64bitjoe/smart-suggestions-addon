@@ -37,6 +37,10 @@ class HAClient:
         return mid
 
     async def start(self) -> None:
+        if not SUPERVISOR_TOKEN:
+            _LOGGER.error("SUPERVISOR_TOKEN is not set — add-on may lack homeassistant_api permission")
+        else:
+            _LOGGER.info("SUPERVISOR_TOKEN present (%d chars)", len(SUPERVISOR_TOKEN))
         self._session = aiohttp.ClientSession(
             headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
         )

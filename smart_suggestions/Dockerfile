@@ -7,7 +7,7 @@ RUN apk add --no-cache python3 py3-aiohttp py3-websockets
 # Copy source
 WORKDIR /app
 COPY src/ ./
+COPY run.sh /app/run.sh
+RUN chmod a+x /app/run.sh
 
-# Register as s6 service — base image starts s6-overlay as PID 1
-COPY run.sh /etc/services.d/smart_suggestions/run
-RUN chmod a+x /etc/services.d/smart_suggestions/run
+CMD ["/app/run.sh"]

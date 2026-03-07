@@ -91,9 +91,10 @@ class SmartSuggestionsAddon:
                 await self._run_refresh_cycle(self._ha._states)
 
     async def run(self) -> None:
+        from ollama_client import OLLAMA_URL, OLLAMA_MODEL
         _LOGGER.info(
-            "Smart Suggestions starting (refresh=%dm, max=%d, history=%dh)",
-            REFRESH_INTERVAL, MAX_SUGGESTIONS, HISTORY_HOURS,
+            "Smart Suggestions starting (refresh=%dm, max=%d, history=%dh, ollama=%s, model=%s)",
+            REFRESH_INTERVAL, MAX_SUGGESTIONS, HISTORY_HOURS, OLLAMA_URL, OLLAMA_MODEL,
         )
 
         await self._ws_server.start()
