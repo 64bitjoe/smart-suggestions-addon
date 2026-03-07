@@ -63,12 +63,21 @@ class SmartSuggestionsAddon:
         self._ha: HAClient | None = None
         self._refresh_lock = asyncio.Lock()
         self._last_suggestions: list = []
+        self._last_states: dict = {}
         self._running = True
         self._feedback: dict = _load_feedback()
 
     async def _on_states_ready(self, states: dict) -> None:
         """Called by HAClient when state changes are debounced and ready."""
+        self._last_states = states
         await self._run_refresh_cycle(states)
+
+    async def _trigger_refresh(self) -> None:
+        """Trigger a refresh using the last known states (called from web UI or feedback)."""
+        if self._last_states:
+            asyncio.get_running_loop().create_task(
+                self._run_refresh_cycle(self._last_states)
+            )
 
     async def _run_refresh_cycle(self, states: dict) -> None:
         """Build context, stream Ollama, broadcast tokens, write HA state."""
@@ -80,6 +89,7 @@ class SmartSuggestionsAddon:
             try:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
                 ctx = build_context(states, history, self._feedback)
+                self._ws_server.set_known_entities(ctx["available_actions"])
                 prompt = build_prompt(ctx, MAX_SUGGESTIONS)
 
                 loop = asyncio.get_running_loop()
@@ -110,6 +120,8 @@ class SmartSuggestionsAddon:
         _save_feedback(self._feedback)
         self._ws_server.set_feedback(self._feedback)
         _LOGGER.info("Feedback recorded: %s %s (net %d)", entity_id, vote, entry["up"] - entry["down"])
+        # Immediately re-run so new suggestions reflect the vote
+        await self._trigger_refresh()
 
     async def run(self) -> None:
         from ollama_client import OLLAMA_URL, OLLAMA_MODEL
@@ -120,6 +132,7 @@ class SmartSuggestionsAddon:
 
         self._ws_server.set_feedback(self._feedback)
         self._ws_server.register_feedback_handler(self._on_feedback)
+        self._ws_server.register_refresh_handler(self._trigger_refresh)
         await self._ws_server.start()
         await self._ollama.start()
 
