@@ -76,14 +76,20 @@ class HAClient:
             await self._on_states_ready(self._states)
 
     async def fetch_history(self, hours: int) -> dict[str, list]:
-        """Fetch entity history for the last N hours."""
+        """Fetch entity history via HA REST API."""
         if not self._session:
             return {}
-        start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+        end_time = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_time = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             async with self._session.get(
-                f"{HA_REST_BASE}/history/period/{start}",
-                params={"significant_changes_only": "true"},
+                f"{HA_REST_BASE}/history/period",
+                params={
+                    "end_time": end_time,
+                    "significant_changes_only": "1",
+                    "minimal_response": "1",
+                    "no_attributes": "1",
+                },
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status != 200:
@@ -96,6 +102,7 @@ class HAClient:
                         eid = entity_history[0].get("entity_id")
                         if eid:
                             result[eid] = entity_history
+                _LOGGER.info("Fetched history for %d entities", len(result))
                 return result
         except Exception as e:
             _LOGGER.warning("Failed to fetch history: %s", e)
