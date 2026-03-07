@@ -6,6 +6,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Callable
+from urllib.parse import urlencode
 
 import aiohttp
 import yarl
@@ -81,21 +82,20 @@ class HAClient:
         if not self._session:
             return {}
         start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # Use yarl.URL with encoded=True so colons in the ISO timestamp aren't
-        # percent-encoded by aiohttp, which causes HA to return HTTP 400.
-        url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}", encoded=True)
+        # Build the full URL as a plain string so yarl.URL(encoded=True) never
+        # re-encodes the colons in the ISO timestamp (which causes HA 400).
+        # Passing params= to session.get() triggers aiohttp URL rebuilding that
+        # ignores encoded=True, so we embed the query string in the URL directly.
+        qs = urlencode({"significant_changes_only": "1", "minimal_response": "1", "no_attributes": "1"})
+        url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}?{qs}", encoded=True)
         try:
             async with self._session.get(
                 url,
-                params={
-                    "significant_changes_only": "1",
-                    "minimal_response": "1",
-                    "no_attributes": "1",
-                },
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status != 200:
-                    _LOGGER.warning("History API returned HTTP %s", resp.status)
+                    _LOGGER.warning("History API returned HTTP %s — body: %s",
+                                    resp.status, await resp.text())
                     return {}
                 data = await resp.json()
                 result = {}
