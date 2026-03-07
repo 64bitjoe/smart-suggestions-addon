@@ -22,7 +22,8 @@ def _load_options() -> dict:
 
 
 _opts = _load_options()
-OLLAMA_URL = _opts.get("ollama_url", "http://homeassistant.local:11434")
+_raw_url = _opts.get("ollama_url", "http://homeassistant.local:11434").strip()
+OLLAMA_URL = _raw_url if _raw_url.startswith(("http://", "https://")) else f"http://{_raw_url}"
 OLLAMA_MODEL = _opts.get("ollama_model", "llama3.2")
 
 
