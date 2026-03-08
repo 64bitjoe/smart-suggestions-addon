@@ -162,6 +162,47 @@ def _count_changes(entity_id: str, history: dict) -> int:
     return len(deduped) - 1
 
 
+def _score_candidate(
+    entity_id: str,
+    state: dict,
+    dow_pattern: dict | None,
+    history: dict,
+    feedback: dict,
+    scene_patterns: dict,
+    now,
+    shown_counts: dict,
+) -> int:
+    """Score a candidate entity 0-100 for suggestion priority."""
+    score = 0
+    # DOW mismatch (up to 40 pts, weighted by confidence)
+    if dow_pattern and not dow_pattern["matches_pattern"]:
+        score += int(40 * dow_pattern["confidence"])
+    # Recency (up to 20 pts)
+    hours = _last_changed_hours(state)
+    score += 20 if hours < 0.5 else 12 if hours < 1.0 else 5 if hours < 2.0 else 0
+    # Activity (up to 15 pts)
+    score += min(15, _count_changes(entity_id, history) * 3)
+    # Scene timing (up to 25 pts)
+    if entity_id in scene_patterns:
+        tr = _scene_time_relevance(scene_patterns[entity_id].get("typical_activation_hours", []), now.hour)
+        score += int(tr * 2.5)
+    # Feedback signal
+    fb = feedback.get(entity_id, {})
+    if isinstance(fb, dict):
+        net = fb.get("up", 0) - fb.get("down", 0)
+        score += net * 8 if net > 0 else net * 10
+    # Domain time-of-day bonuses
+    domain = entity_id.split(".")[0]
+    hour = now.hour
+    if domain == "light" and ((18 <= hour <= 23) or (0 <= hour < 7)):
+        score += 10
+    if domain == "cover" and ((6 <= hour < 9) or (17 <= hour < 20)):
+        score += 8
+    # Impression penalty (un-acted suggestions decay)
+    score -= shown_counts.get(entity_id, 0) * 5
+    return max(0, min(100, score))
+
+
 def _is_stale(state: dict, history: dict, dow_patterns_by_id: dict) -> bool:
     """Return True if this entity is stale and should be excluded from available_actions."""
     domain = state.get("entity_id", "").split(".")[0]
@@ -285,10 +326,25 @@ def build_context(states: dict, history: dict, feedback: dict | None = None, dow
             if summary:
                 ctx["history_summaries"][eid] = summary
 
+    # Score and filter to top 15 candidates
+    shown_counts = {eid: v.get("shown", 0) for eid, v in feedback.items() if isinstance(v, dict)}
+    # Reset shown for entities that recently changed (user acted or state changed naturally)
+    for entry in ctx["available_actions"]:
+        if _last_changed_hours(states.get(entry["entity_id"], {})) < 0.25:
+            feedback.setdefault(entry["entity_id"], {})["shown"] = 0
+    for entry in ctx["available_actions"]:
+        eid = entry["entity_id"]
+        entry["score"] = _score_candidate(
+            eid, states.get(eid, {}), dow_patterns_by_id.get(eid),
+            history, feedback, scene_patterns, now, shown_counts,
+        )
+    ctx["available_actions"].sort(key=lambda e: e["score"], reverse=True)
+    ctx["available_actions"] = ctx["available_actions"][:15]
+
     return ctx
 
 
-def build_prompt(ctx: dict, max_suggestions: int) -> str:
+def build_prompt(ctx: dict, max_suggestions: int, patterns: dict | None = None) -> str:
     entity_states_json = json.dumps(ctx["entity_states"], indent=2)
     actions_json = json.dumps(ctx["available_actions"], indent=2)
     history_json = json.dumps(ctx["history_summaries"], indent=2)
@@ -304,6 +360,16 @@ def build_prompt(ctx: dict, max_suggestions: int) -> str:
 FEEDBACK HISTORY (user upvotes/downvotes on past suggestions):
 {feedback_json}
 Entities with more upvotes should be ranked higher. Entities with net negative votes should be ranked lower or omitted.
+"""
+
+    patterns_section = ""
+    if patterns:
+        patterns_section = f"""
+LEARNED BEHAVIORAL PATTERNS (from deep history analysis):
+Routines: {json.dumps(patterns.get("routines", []))}
+Current anomalies: {json.dumps(patterns.get("anomalies", []))}
+Right now insights: {json.dumps(patterns.get("right_now", []))}
+Use these patterns as HIGH-PRIORITY signals for your suggestions.
 """
 
     return f"""You are a smart home assistant. Based on the current context and recent history, suggest the most relevant actions a user might want to take RIGHT NOW.
@@ -325,8 +391,8 @@ CRITICAL: Entities where "matches_pattern" is FALSE are your HIGHEST PRIORITY su
 the user's own weekly routine says this entity should currently be in a different state than it is.
 Entities where "matches_pattern" is TRUE are behaving as expected — deprioritize them unless other
 strong signals apply (active media, scene timing, explicit user feedback).
-{feedback_section}
-AVAILABLE ACTIONS:
+{feedback_section}{patterns_section}
+AVAILABLE ACTIONS (pre-scored 0-100 by relevance engine, already filtered to top 15):
 {actions_json}
 
 Return ONLY a valid JSON array (no markdown, no explanation) with up to {max_suggestions} suggestions ranked by relevance. Each suggestion must have:
@@ -340,11 +406,10 @@ Return ONLY a valid JSON array (no markdown, no explanation) with up to {max_sug
 - "section": one of "suggested", "scene", or "stretch"
 
 RANKING (follow strictly):
-1. DOW pattern mismatch (matches_pattern=false) → TOP PRIORITY
-2. High change_count or low last_changed_hours → recently active, likely relevant
-3. NEVER suggest an action matching current state (no turn_off on "off", no turn_on on "on")
-4. DOW pattern match → LOW priority unless strong secondary reason
-5. 1-2 "stretch" suggestions (section: "stretch"): unexpected, delightful, pattern-based (e.g. "vacuum hasn't run in days", "it's Friday night", "sunset is soon")
-6. scene.* → section "scene"; others → "suggested" or "stretch"
+1. AVAILABLE ACTIONS each have a pre-computed "score" (0-100). Use this as your PRIMARY ranking signal.
+2. Boost ranking for entities that appear in LEARNED PATTERNS "right_now" or "anomalies".
+3. CRITICAL: Only use entity_ids from the AVAILABLE ACTIONS list verbatim. Never invent entity_ids.
+4. Never suggest an action matching current state (no turn_off on "off", no turn_on on "on").
+5. Assign section "scene" to scene.* entities, "stretch" to 1-2 lower-scored contextual picks, "suggested" to all others.
 
 Only suggest actions that make contextual sense. Use history to understand patterns."""

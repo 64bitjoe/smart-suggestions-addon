@@ -151,6 +151,16 @@ _UI_HTML = """<!DOCTYPE html>
 <div id="list-container"></div>
 
 <div class="panel-wrap">
+  <button class="panel-toggle" id="status-toggle">
+    <span>🔍 System Status</span>
+    <span id="status-arrow">▶</span>
+  </button>
+  <div class="panel-body" id="status-panel">
+    <div id="status-content" style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px 16px;font-size:13px;line-height:1.7;font-family:'SF Mono','Menlo',monospace;">Loading…</div>
+  </div>
+</div>
+
+<div class="panel-wrap">
   <button class="panel-toggle" id="inject-toggle">
     <span>+ Add entity to suggestions</span>
     <span id="inject-arrow">▶</span>
@@ -417,6 +427,41 @@ function connectWS() {
   });
 }
 
+// ── System Status panel ──
+let _statusOpen = false;
+document.getElementById('status-toggle').addEventListener('click', async () => {
+  _statusOpen = !_statusOpen;
+  document.getElementById('status-panel').classList.toggle('open', _statusOpen);
+  document.getElementById('status-arrow').textContent = _statusOpen ? '▼' : '▶';
+  if (_statusOpen) await refreshStatus();
+});
+
+async function refreshStatus() {
+  const el = document.getElementById('status-content');
+  try {
+    const r = await fetch(BASE + '/status');
+    const s = await r.json();
+    const ok = (v) => v ? '🟢' : '🔴';
+    const na = (v) => v !== undefined && v !== null ? v : '—';
+    const rows = [
+      ['HA connection',     ok(s.ha_connected)     + ' ' + (s.ha_connected ? 'Connected' : 'Disconnected')],
+      ['Ollama connection', ok(s.ollama_connected)  + ' ' + (s.ollama_connected ? 'Reachable' : 'Unreachable')],
+      ['Ollama URL',        na(s.ollama_url)],
+      ['Model',             na(s.ollama_model)],
+      ['Entity count',      na(s.entity_count)],
+      ['Last refresh',      na(s.last_refresh)],
+      ['Last analysis',     na(s.last_analysis)],
+      ['Patterns loaded',   ok(s.patterns_loaded)  + ' ' + (s.patterns_loaded ? `${s.pattern_routines} routines, ${s.pattern_anomalies} anomalies` : 'None yet')],
+      ['Feedback entries',  na(s.feedback_count)],
+    ];
+    el.innerHTML = rows.map(([k, v]) =>
+      `<div style="display:flex;justify-content:space-between;gap:12px;border-bottom:0.5px solid rgba(255,255,255,0.06);padding:3px 0"><span style="color:#8E8E93">${k}</span><span style="text-align:right;color:#fff">${v}</span></div>`
+    ).join('');
+  } catch (e) {
+    el.textContent = '⚠️ Could not load status: ' + e;
+  }
+}
+
 render();
 connectWS();
 </script>
@@ -437,6 +482,7 @@ class WSServer:
         self._app.router.add_get("/entities", self._entities_handler)
         self._app.router.add_post("/inject", self._inject_handler)
         self._app.router.add_get("/logs", self._logs_handler)
+        self._app.router.add_get("/status", self._status_handler)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
         self._last_status: str = "idle"
@@ -445,6 +491,7 @@ class WSServer:
         self._feedback_cb = None
         self._refresh_cb = None
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
+        self._system_status: dict = {}
 
     def register_feedback_handler(self, cb) -> None:
         self._feedback_cb = cb
@@ -457,6 +504,9 @@ class WSServer:
 
     def set_known_entities(self, entities: list) -> None:
         self._known_entities = entities
+
+    def set_system_status(self, status: dict) -> None:
+        self._system_status = status
 
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)
@@ -501,6 +551,9 @@ class WSServer:
 
     async def _logs_handler(self, request: web.Request) -> web.Response:
         return web.json_response(list(self._log_buffer))
+
+    async def _status_handler(self, request: web.Request) -> web.Response:
+        return web.json_response(self._system_status)
 
     async def _inject_handler(self, request: web.Request) -> web.Response:
         try:

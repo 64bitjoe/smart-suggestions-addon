@@ -10,6 +10,7 @@ import signal
 from context_builder import build_context, build_prompt, _ACTION_DOMAINS
 from ha_client import HAClient, POLL_INTERVAL, REFRESH_INTERVAL as DEFAULT_REFRESH_INTERVAL
 from ollama_client import OllamaClient
+from pattern_analyzer import PatternAnalyzer
 from ws_server import WSServer
 
 logging.basicConfig(
@@ -69,6 +70,7 @@ _opts = _load_options()
 REFRESH_INTERVAL = int(_opts.get("refresh_interval", 10))
 MAX_SUGGESTIONS = int(_opts.get("max_suggestions", 7))
 HISTORY_HOURS = int(_opts.get("history_hours", 4))
+ANALYSIS_INTERVAL = 7200  # 2 hours
 
 
 class _WSLogHandler(logging.Handler):
@@ -96,10 +98,37 @@ class SmartSuggestionsAddon:
         self._last_states: dict = {}
         self._running = True
         self._feedback: dict = _load_feedback()
+        self._patterns: dict = PatternAnalyzer.load_patterns()
+        self._pattern_analyzer = PatternAnalyzer(self._ollama)
+        self._last_analysis: float = 0.0
+        self._ha_connected: bool = False
+        self._ollama_connected: bool = False
+        self._last_refresh_str: str = "Never"
+        self._last_analysis_str: str = "Never"
+
+    def _push_system_status(self) -> None:
+        from ollama_client import OLLAMA_URL, OLLAMA_MODEL  # noqa: PLC0415
+        status = {
+            "ha_connected": self._ha_connected,
+            "ollama_connected": self._ollama_connected,
+            "ollama_url": OLLAMA_URL,
+            "ollama_model": OLLAMA_MODEL,
+            "entity_count": len(self._last_states),
+            "last_refresh": self._last_refresh_str,
+            "last_analysis": self._last_analysis_str,
+            "patterns_loaded": bool(self._patterns),
+            "pattern_routines": len(self._patterns.get("routines", [])) if self._patterns else 0,
+            "pattern_anomalies": len(self._patterns.get("anomalies", [])) if self._patterns else 0,
+            "feedback_count": len(self._feedback),
+        }
+        self._ws_server.set_system_status(status)
 
     async def _on_states_ready(self, states: dict) -> None:
         """Called by HAClient when state changes are debounced and ready."""
         self._last_states = states
+        if not self._ha_connected:
+            self._ha_connected = True
+            self._push_system_status()
         # Populate inject panel with ALL actionable entities (no dormancy filter)
         all_entities = [
             {
@@ -134,7 +163,7 @@ class SmartSuggestionsAddon:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
                 dow_history = await self._ha.fetch_dow_history()
                 ctx = build_context(states, history, self._feedback, dow_history=dow_history)
-                prompt = build_prompt(ctx, MAX_SUGGESTIONS)
+                prompt = build_prompt(ctx, MAX_SUGGESTIONS, patterns=self._patterns or None)
 
                 loop = asyncio.get_running_loop()
 
@@ -142,8 +171,33 @@ class SmartSuggestionsAddon:
                     loop.create_task(self._ws_server.broadcast_token(token))
 
                 raw = await self._ollama.stream_generate(prompt, on_token)
+                self._ollama_connected = bool(raw)
                 suggestions = self._ollama.parse_suggestions(raw, MAX_SUGGESTIONS)
                 suggestions = _remove_noops(suggestions, states)
+
+                # Post-LLM validation — drop hallucinated entity_ids and hard-downvoted
+                valid_eids = {a["entity_id"] for a in ctx["available_actions"]}
+                score_map = {a["entity_id"]: a.get("score", 50) for a in ctx["available_actions"]}
+                validated = []
+                for s in suggestions:
+                    eid = s.get("entity_id")
+                    if eid not in valid_eids:
+                        _LOGGER.warning("Dropping hallucinated entity_id: %s", eid)
+                        continue
+                    fb = self._feedback.get(eid, {})
+                    if isinstance(fb, dict) and fb.get("up", 0) - fb.get("down", 0) <= -3:
+                        _LOGGER.info("Excluding hard-downvoted entity: %s", eid)
+                        continue
+                    s["score"] = score_map.get(eid, 50)
+                    validated.append(s)
+                suggestions = validated
+
+                # Impression tracking
+                shown_eids = {s["entity_id"] for s in suggestions if s.get("entity_id")}
+                for eid in shown_eids:
+                    entry = self._feedback.setdefault(eid, {"up": 0, "down": 0, "shown": 0})
+                    entry["shown"] = min(entry.get("shown", 0) + 1, 8)
+                _save_feedback(self._feedback)
 
                 if suggestions:
                     self._last_suggestions = suggestions
@@ -153,15 +207,22 @@ class SmartSuggestionsAddon:
 
                 await self._ws_server.broadcast_suggestions(suggestions)
                 await self._ha.write_suggestions_state(suggestions)
-                _LOGGER.info("Refresh complete: %d suggestions", len(suggestions))
+                from datetime import datetime as _dt  # noqa: PLC0415
+                self._last_refresh_str = _dt.now().strftime("%H:%M:%S")
+                self._push_system_status()
+                _LOGGER.info("Refresh complete: %d suggestions (candidates scored, top-%d sent to Ollama)",
+                             len(suggestions), len(ctx["available_actions"]))
 
             except Exception as e:
+                self._ollama_connected = False
                 _LOGGER.error("Refresh cycle error: %s", e)
+                self._push_system_status()
                 await self._ws_server.broadcast_status("error")
 
     async def _on_feedback(self, entity_id: str, vote: str) -> None:
-        entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0})
+        entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0, "shown": 0})
         entry[vote] = entry.get(vote, 0) + 1
+        entry["shown"] = 0  # reset impression penalty on explicit feedback
         _save_feedback(self._feedback)
         self._ws_server.set_feedback(self._feedback)
         _LOGGER.info("Feedback recorded: %s %s (net %d)", entity_id, vote, entry["up"] - entry["down"])
@@ -178,6 +239,7 @@ class SmartSuggestionsAddon:
         self._ws_server.set_feedback(self._feedback)
         self._ws_server.register_feedback_handler(self._on_feedback)
         self._ws_server.register_refresh_handler(self._trigger_refresh)
+        self._push_system_status()
         await self._ws_server.start()
 
         # Stream all log output to the web UI log panel
@@ -197,6 +259,30 @@ class SmartSuggestionsAddon:
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
         await self._ha.start()
+        asyncio.get_running_loop().create_task(self._analysis_loop())
+
+    async def _analysis_loop(self) -> None:
+        """Background task: run deep pattern analysis every 2 hours."""
+        while self._running:
+            await asyncio.sleep(ANALYSIS_INTERVAL)
+            if not self._last_states:
+                continue
+            try:
+                history_48h = await self._ha.fetch_history(48)
+                patterns = await self._pattern_analyzer.analyze(history_48h, self._last_states)
+                if patterns:
+                    self._patterns = patterns
+                    PatternAnalyzer.save_patterns(patterns)
+                    from datetime import datetime as _dt  # noqa: PLC0415
+                    self._last_analysis_str = _dt.now().strftime("%H:%M:%S")
+                    self._push_system_status()
+                    _LOGGER.info(
+                        "Pattern analysis complete: %d routines, %d anomalies",
+                        len(patterns.get("routines", [])),
+                        len(patterns.get("anomalies", [])),
+                    )
+            except Exception as e:
+                _LOGGER.warning("Pattern analysis failed: %s", e)
 
     async def _shutdown(self) -> None:
         _LOGGER.info("Shutting down...")

@@ -91,6 +91,29 @@ class OllamaClient:
         _LOGGER.error("Ollama stream failed after 2 attempts: %s", last_error)
         return full_response
 
+    async def generate_analysis(self, prompt: str) -> str:
+        """Non-streaming Ollama call for pattern analysis (higher tokens, temperature 0.5)."""
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0.5, "num_predict": 4096},
+        }
+        try:
+            async with self._session.post(
+                f"{OLLAMA_URL}/api/generate",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=180),
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Ollama HTTP {resp.status}")
+                data = await resp.json()
+                return data.get("response", "")
+        except Exception as e:
+            _LOGGER.error("Pattern analysis Ollama call failed: %s", e)
+            return ""
+
     def parse_suggestions(self, raw: str, max_suggestions: int) -> list:
         """Parse the JSON suggestions array from Ollama output."""
         clean = raw.strip()
