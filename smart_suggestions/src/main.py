@@ -145,6 +145,35 @@ class SmartSuggestionsAddon:
         self._ws_server.set_known_entities(all_entities)
         await self._run_refresh_cycle(states)
 
+    async def _trigger_analysis(self) -> None:
+        """Manually trigger a pattern analysis cycle."""
+        if not self._last_states:
+            _LOGGER.warning("Pattern analysis requested but no states loaded yet")
+            return
+        _LOGGER.info("Manual pattern analysis triggered")
+        asyncio.get_running_loop().create_task(self._run_analysis())
+
+    async def _run_analysis(self) -> None:
+        """Run a single pattern analysis cycle (shared by loop and manual trigger)."""
+        try:
+            history_48h = await self._ha.fetch_history(48)
+            patterns = await self._pattern_analyzer.analyze(history_48h, self._last_states)
+            if patterns:
+                self._patterns = patterns
+                PatternAnalyzer.save_patterns(patterns)
+                from datetime import datetime as _dt  # noqa: PLC0415
+                self._last_analysis_str = _dt.now().strftime("%H:%M:%S")
+                self._push_system_status()
+                _LOGGER.info(
+                    "Pattern analysis complete: %d routines, %d anomalies",
+                    len(patterns.get("routines", [])),
+                    len(patterns.get("anomalies", [])),
+                )
+            else:
+                _LOGGER.info("Pattern analysis returned no patterns")
+        except Exception as e:
+            _LOGGER.warning("Pattern analysis failed: %s", e)
+
     async def _trigger_refresh(self) -> None:
         """Trigger a refresh using the last known states (called from web UI or feedback)."""
         if self._last_states:
@@ -252,6 +281,7 @@ class SmartSuggestionsAddon:
         self._ws_server.set_feedback(self._feedback)
         self._ws_server.register_feedback_handler(self._on_feedback)
         self._ws_server.register_refresh_handler(self._trigger_refresh)
+        self._ws_server.register_analyze_handler(self._trigger_analysis)
         self._push_system_status()
         await self._ws_server.start()
 
@@ -279,24 +309,8 @@ class SmartSuggestionsAddon:
         """Background task: run deep pattern analysis every 2 hours."""
         while self._running:
             await asyncio.sleep(ANALYSIS_INTERVAL)
-            if not self._last_states:
-                continue
-            try:
-                history_48h = await self._ha.fetch_history(48)
-                patterns = await self._pattern_analyzer.analyze(history_48h, self._last_states)
-                if patterns:
-                    self._patterns = patterns
-                    PatternAnalyzer.save_patterns(patterns)
-                    from datetime import datetime as _dt  # noqa: PLC0415
-                    self._last_analysis_str = _dt.now().strftime("%H:%M:%S")
-                    self._push_system_status()
-                    _LOGGER.info(
-                        "Pattern analysis complete: %d routines, %d anomalies",
-                        len(patterns.get("routines", [])),
-                        len(patterns.get("anomalies", [])),
-                    )
-            except Exception as e:
-                _LOGGER.warning("Pattern analysis failed: %s", e)
+            if self._last_states:
+                await self._run_analysis()
 
     async def _shutdown(self) -> None:
         _LOGGER.info("Shutting down...")

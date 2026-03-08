@@ -157,6 +157,7 @@ _UI_HTML = """<!DOCTYPE html>
   </button>
   <div class="panel-body" id="status-panel">
     <div id="status-content" style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px 16px;font-size:13px;line-height:1.7;font-family:'SF Mono','Menlo',monospace;">Loading…</div>
+    <button class="refresh-btn" id="analyze-btn" style="margin-top:10px;width:100%;justify-content:center;">🧠 Run Pattern Analysis Now</button>
   </div>
 </div>
 
@@ -469,6 +470,21 @@ async function refreshStatus() {
   }
 }
 
+// ── Analyze button ──
+document.getElementById('analyze-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('analyze-btn');
+  btn.classList.add('loading');
+  btn.textContent = '⏳ Analyzing…';
+  try {
+    await fetch(BASE + '/analyze', { method: 'POST' });
+    showToast('🧠 Pattern analysis started — check logs for progress');
+  } catch { showToast('⚠️ Could not start analysis'); }
+  setTimeout(() => {
+    btn.classList.remove('loading');
+    btn.textContent = '🧠 Run Pattern Analysis Now';
+  }, 3000);
+});
+
 render();
 connectWS();
 </script>
@@ -490,6 +506,7 @@ class WSServer:
         self._app.router.add_post("/inject", self._inject_handler)
         self._app.router.add_get("/logs", self._logs_handler)
         self._app.router.add_get("/status", self._status_handler)
+        self._app.router.add_post("/analyze", self._analyze_handler)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
         self._last_status: str = "idle"
@@ -497,6 +514,7 @@ class WSServer:
         self._known_entities: list = []
         self._feedback_cb = None
         self._refresh_cb = None
+        self._analyze_cb = None
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
         self._system_status: dict = {}
 
@@ -505,6 +523,9 @@ class WSServer:
 
     def register_refresh_handler(self, cb) -> None:
         self._refresh_cb = cb
+
+    def register_analyze_handler(self, cb) -> None:
+        self._analyze_cb = cb
 
     def set_feedback(self, feedback: dict) -> None:
         self._feedback = feedback
@@ -568,6 +589,11 @@ class WSServer:
 
     async def _status_handler(self, request: web.Request) -> web.Response:
         return web.json_response(self._system_status)
+
+    async def _analyze_handler(self, request: web.Request) -> web.Response:
+        if self._analyze_cb:
+            asyncio.get_running_loop().create_task(self._analyze_cb())
+        return web.json_response({"ok": True})
 
     async def _inject_handler(self, request: web.Request) -> web.Response:
         try:
