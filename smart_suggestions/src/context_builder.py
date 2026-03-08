@@ -114,6 +114,35 @@ def _summarise_history(history: list) -> str:
     return " → ".join(parts)
 
 
+def _scene_entity_match_score(scene_eid: str, states: dict) -> tuple[int, int, list[str]]:
+    """Return (matching_entities, total_entities, matching_names) for a scene vs current states.
+
+    HA exposes a scene's entity list in state.attributes.entity_id (list) and
+    state.attributes.entities (dict of entity_id → {state, ...}).
+    We use whichever is available to check how many members are already in the
+    scene's target state."""
+    scene_state = states.get(scene_eid, {})
+    attrs = scene_state.get("attributes", {})
+
+    # Prefer attributes.entities dict (richer — has target state per entity)
+    entities_dict: dict = attrs.get("entities", {})
+    if entities_dict:
+        matching = []
+        for member_eid, target in entities_dict.items():
+            current = states.get(member_eid, {}).get("state")
+            target_state = target.get("state") if isinstance(target, dict) else None
+            if current and target_state and current == target_state:
+                name = states.get(member_eid, {}).get("attributes", {}).get("friendly_name", member_eid)
+                matching.append(name)
+        return len(matching), len(entities_dict), matching
+
+    # Fallback: just the entity_id list — no target states, so we can only report count
+    members = attrs.get("entity_id", [])
+    if isinstance(members, str):
+        members = [members]
+    return 0, len(members), []
+
+
 def _extract_scene_patterns(history: dict, states: dict) -> dict:
     """Extract typical activation hours for scenes from their history."""
     patterns = {}
@@ -261,6 +290,31 @@ def build_context(states: dict, history: dict, feedback: dict | None = None, dow
     dow_patterns_list = build_dow_patterns(dow_history or {}, states)
     dow_patterns_by_id = {p["entity_id"]: p for p in dow_patterns_list}
 
+    # Build scene context: which scenes have members already matching their target state
+    scene_context = []
+    for eid, st in states.items():
+        if not eid.startswith("scene."):
+            continue
+        if st.get("state") in ("unavailable", "unknown", ""):
+            continue
+        matching, total, names = _scene_entity_match_score(eid, states)
+        if total > 0:
+            name = st.get("attributes", {}).get("friendly_name", eid)
+            time_rel = _scene_time_relevance(
+                scene_patterns.get(eid, {}).get("typical_activation_hours", []), now.hour
+            )
+            scene_context.append({
+                "entity_id": eid,
+                "name": name,
+                "member_count": total,
+                "already_matching": matching,
+                "match_ratio": round(matching / total, 2) if total else 0,
+                "matching_entities": names[:5],  # cap to keep prompt compact
+                "time_relevance": time_rel,
+            })
+    # Sort: highest match_ratio first, then time_relevance
+    scene_context.sort(key=lambda s: (s["match_ratio"], s["time_relevance"]), reverse=True)
+
     ctx = {
         "current_time": now.strftime("%H:%M"),
         "current_date": now.strftime("%A, %B %d %Y"),
@@ -270,6 +324,7 @@ def build_context(states: dict, history: dict, feedback: dict | None = None, dow
         "available_actions": [],
         "history_summaries": {},
         "scene_patterns": scene_patterns,
+        "scene_context": scene_context,
         "feedback_signals": feedback,
         "dow_patterns": dow_patterns_list,
     }
@@ -332,12 +387,17 @@ def build_context(states: dict, history: dict, feedback: dict | None = None, dow
     for entry in ctx["available_actions"]:
         if _last_changed_hours(states.get(entry["entity_id"], {})) < 0.25:
             feedback.setdefault(entry["entity_id"], {})["shown"] = 0
+    scene_readiness = {s["entity_id"]: s["match_ratio"] for s in scene_context}
     for entry in ctx["available_actions"]:
         eid = entry["entity_id"]
         entry["score"] = _score_candidate(
             eid, states.get(eid, {}), dow_patterns_by_id.get(eid),
             history, feedback, scene_patterns, now, shown_counts,
         )
+        # Boost scenes whose members are already in the right state
+        if eid in scene_readiness:
+            entry["score"] = min(100, entry["score"] + int(scene_readiness[eid] * 30))
+            entry["match_ratio"] = scene_readiness[eid]
     ctx["available_actions"].sort(key=lambda e: e["score"], reverse=True)
     ctx["available_actions"] = ctx["available_actions"][:15]
 
@@ -350,6 +410,18 @@ def build_prompt(ctx: dict, max_suggestions: int, patterns: dict | None = None) 
     history_json = json.dumps(ctx["history_summaries"], indent=2)
     scene_patterns_json = json.dumps(ctx["scene_patterns"], indent=2)
     dow_patterns_json = json.dumps(ctx.get("dow_patterns", []), indent=2)
+    scene_context = ctx.get("scene_context", [])
+    scene_context_section = ""
+    if scene_context:
+        scene_context_json = json.dumps(scene_context, indent=2)
+        scene_context_section = f"""
+SCENE READINESS (HIGHEST PRIORITY — check before all other suggestions):
+The following scenes have members that are ALREADY in their target state right now.
+A high "match_ratio" (close to 1.0) means the home is almost ready for that scene —
+suggest it first with a reason like "Your kitchen and living room lights are already
+set for Evening — want to activate the scene?".
+{scene_context_json}
+"""
     day_of_week = ctx.get("day_of_week", "")
     current_time = ctx["current_time"]
     feedback = ctx.get("feedback_signals", {})
@@ -378,7 +450,7 @@ CONTEXT:
 - Time: {current_time} ({ctx['time_period']} on {ctx['current_date']})
 - Entity States: {entity_states_json}
 - Recent History (state transitions): {history_json}
-
+{scene_context_section}
 SCENE USAGE PATTERNS:
 The following shows which hours of the day each scene is typically activated (from history).
 Rank scenes higher when the current hour ({datetime.now().hour}) is close to their typical activation hours.

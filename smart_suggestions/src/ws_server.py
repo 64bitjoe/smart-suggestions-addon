@@ -419,6 +419,7 @@ function connectWS() {
     if (msg.type === 'suggestions') { _suggestions = Array.isArray(msg.data) ? msg.data : []; _status = 'ready'; render(); }
     else if (msg.type === 'status') { _status = msg.state || 'idle'; render(); }
     else if (msg.type === 'log') { appendLog(msg); }
+    else if (msg.type === 'system_status') { renderStatusData(msg.data); }
   });
   ws.addEventListener('close', () => {
     document.getElementById('status-dot').className = 'status-dot';
@@ -436,29 +437,35 @@ document.getElementById('status-toggle').addEventListener('click', async () => {
   if (_statusOpen) await refreshStatus();
 });
 
+function renderStatusData(s) {
+  const el = document.getElementById('status-content');
+  if (!el) return;
+  const ok = (v) => v ? '🟢' : '🔴';
+  const na = (v) => (v !== undefined && v !== null && v !== '') ? v : '—';
+  const rows = [
+    ['HA connection',     ok(s.ha_connected)    + ' ' + (s.ha_connected ? 'Connected' : 'Disconnected')],
+    ['Ollama connection', ok(s.ollama_connected) + ' ' + (s.ollama_connected ? 'Reachable' : 'Unreachable')],
+    ['Ollama URL',        na(s.ollama_url)],
+    ['Model',             na(s.ollama_model)],
+    ['Entity count',      na(s.entity_count)],
+    ['Last refresh',      na(s.last_refresh)],
+    ['Last analysis',     na(s.last_analysis)],
+    ['Patterns loaded',   ok(s.patterns_loaded)  + ' ' + (s.patterns_loaded ? `${s.pattern_routines} routines, ${s.pattern_anomalies} anomalies` : 'None yet')],
+    ['Feedback entries',  na(s.feedback_count)],
+  ];
+  el.innerHTML = rows.map(([k, v]) =>
+    `<div style="display:flex;justify-content:space-between;gap:12px;border-bottom:0.5px solid rgba(255,255,255,0.06);padding:3px 0"><span style="color:#8E8E93">${k}</span><span style="text-align:right;color:#fff">${v}</span></div>`
+  ).join('');
+}
+
 async function refreshStatus() {
   const el = document.getElementById('status-content');
   try {
     const r = await fetch(BASE + '/status');
     const s = await r.json();
-    const ok = (v) => v ? '🟢' : '🔴';
-    const na = (v) => v !== undefined && v !== null ? v : '—';
-    const rows = [
-      ['HA connection',     ok(s.ha_connected)     + ' ' + (s.ha_connected ? 'Connected' : 'Disconnected')],
-      ['Ollama connection', ok(s.ollama_connected)  + ' ' + (s.ollama_connected ? 'Reachable' : 'Unreachable')],
-      ['Ollama URL',        na(s.ollama_url)],
-      ['Model',             na(s.ollama_model)],
-      ['Entity count',      na(s.entity_count)],
-      ['Last refresh',      na(s.last_refresh)],
-      ['Last analysis',     na(s.last_analysis)],
-      ['Patterns loaded',   ok(s.patterns_loaded)  + ' ' + (s.patterns_loaded ? `${s.pattern_routines} routines, ${s.pattern_anomalies} anomalies` : 'None yet')],
-      ['Feedback entries',  na(s.feedback_count)],
-    ];
-    el.innerHTML = rows.map(([k, v]) =>
-      `<div style="display:flex;justify-content:space-between;gap:12px;border-bottom:0.5px solid rgba(255,255,255,0.06);padding:3px 0"><span style="color:#8E8E93">${k}</span><span style="text-align:right;color:#fff">${v}</span></div>`
-    ).join('');
+    renderStatusData(s);
   } catch (e) {
-    el.textContent = '⚠️ Could not load status: ' + e;
+    if (el) el.textContent = '⚠️ Could not load status: ' + e;
   }
 }
 
@@ -507,6 +514,13 @@ class WSServer:
 
     def set_system_status(self, status: dict) -> None:
         self._system_status = status
+        # Schedule a live push to all connected clients
+        try:
+            import asyncio  # noqa: PLC0415
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.broadcast({"type": "system_status", "data": status}))
+        except RuntimeError:
+            pass  # No running loop yet (called during startup before ws server started)
 
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)
@@ -593,6 +607,8 @@ class WSServer:
         await self._send(ws, {"type": "status", "state": self._last_status})
         if self._last_suggestions:
             await self._send(ws, {"type": "suggestions", "data": self._last_suggestions})
+        if self._system_status:
+            await self._send(ws, {"type": "system_status", "data": self._system_status})
 
         try:
             async for msg in ws:

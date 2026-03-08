@@ -229,6 +229,19 @@ class SmartSuggestionsAddon:
         # Immediately re-run so new suggestions reflect the vote
         await self._trigger_refresh()
 
+    async def _ollama_health_check(self) -> None:
+        """Ping Ollama on startup to set connectivity state immediately."""
+        from ollama_client import OLLAMA_URL  # noqa: PLC0415
+        import aiohttp  # noqa: PLC0415
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(f"{OLLAMA_URL}/api/tags", timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    self._ollama_connected = r.status == 200
+        except Exception:
+            self._ollama_connected = False
+        _LOGGER.info("Ollama health check: %s", "reachable" if self._ollama_connected else "unreachable")
+        self._push_system_status()
+
     async def run(self) -> None:
         from ollama_client import OLLAMA_URL, OLLAMA_MODEL
         _LOGGER.info(
@@ -248,6 +261,7 @@ class SmartSuggestionsAddon:
         log_handler.setLevel(logging.DEBUG)
         logging.getLogger().addHandler(log_handler)
         await self._ollama.start()
+        asyncio.get_running_loop().create_task(self._ollama_health_check())
 
         self._ha = HAClient(
             on_states_ready=self._on_states_ready,
