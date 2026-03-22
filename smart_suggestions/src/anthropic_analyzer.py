@@ -160,7 +160,9 @@ class AnthropicAnalyzer:
                 max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return message.content[0].text
+            text = message.content[0].text
+            _LOGGER.info("Anthropic response: stop_reason=%s, len=%d", message.stop_reason, len(text))
+            return text
         else:
             # OpenAI-compatible
             response = self._client.chat.completions.create(
