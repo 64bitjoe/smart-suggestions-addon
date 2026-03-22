@@ -43,7 +43,7 @@ schema:
   ai_provider: str
   ai_api_key: password?
   ai_base_url: str?
-  ai_model: str
+  ai_model: str?
   correlation_window_minutes: int
   pattern_confidence_threshold: float
 # image: ghcr.io/64bitjoe/smart-suggestions-addon/{arch}
