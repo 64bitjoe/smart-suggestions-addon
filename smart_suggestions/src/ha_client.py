@@ -119,7 +119,7 @@ class HAClient:
         """Fetch history for the same day-of-week at ±hour_window of current time, past weeks_back weeks."""
         if not self._session or not self._states:
             return {}
-        from context_builder import _ACTION_DOMAINS
+        from const import _ACTION_DOMAINS
         action_ids = [eid for eid in self._states if eid.split(".")[0] in _ACTION_DOMAINS]
         if not action_ids:
             return {}
