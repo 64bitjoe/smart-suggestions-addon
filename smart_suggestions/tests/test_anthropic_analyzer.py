@@ -1,6 +1,6 @@
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 from anthropic_analyzer import AnthropicAnalyzer, _compact_history
 
 
@@ -112,3 +112,11 @@ async def test_analyze_handles_json_parse_error(caplog):
 
     patterns = await analyzer.analyze(history, states)
     assert patterns == {"routines": [], "correlations": [], "anomalies": []}
+
+
+def test_compact_history_includes_scene_with_single_state():
+    """Scenes always report 'scening' — they should not be excluded by the 2-distinct-states filter."""
+    history = make_history("scene.evening", ["scening", "scening", "scening"])
+    states = {"scene.evening": {"attributes": {"friendly_name": "Evening Scene"}}}
+    compact = _compact_history(history, states)
+    assert "scene.evening" in compact

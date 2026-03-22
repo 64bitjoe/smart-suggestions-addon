@@ -11,7 +11,6 @@ from const import _ACTION_DOMAINS
 
 _LOGGER = logging.getLogger(__name__)
 
-_EMPTY: dict = {"routines": [], "correlations": [], "anomalies": []}
 _MAX_HISTORY_ENTRIES = 8
 
 
@@ -135,13 +134,13 @@ class AnthropicAnalyzer:
         compact = _compact_history(history, states)
         if not compact:
             _LOGGER.info("AnthropicAnalyzer: no actionable history to analyze")
-            return dict(_EMPTY)
+            return {"routines": [], "correlations": [], "anomalies": []}
 
         if not self._client:
             _LOGGER.warning("AnthropicAnalyzer: no AI client configured — skipping")
-            return dict(_EMPTY)
+            return {"routines": [], "correlations": [], "anomalies": []}
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         prompt = _build_prompt(compact, now)
         _LOGGER.info("AnthropicAnalyzer: analyzing %d entities with %s/%s", len(compact), self._provider, self._model)
 
@@ -151,8 +150,8 @@ class AnthropicAnalyzer:
             )
             return self._parse(raw)
         except Exception as e:
-            _LOGGER.warning("AnthropicAnalyzer: unexpected error: %s", e)
-            return dict(_EMPTY)
+            _LOGGER.warning("AnthropicAnalyzer: unexpected error (%s): %s", type(e).__name__, e)
+            return {"routines": [], "correlations": [], "anomalies": []}
 
     def _call_api(self, prompt: str) -> str:
         if self._provider == "anthropic":
@@ -177,11 +176,11 @@ class AnthropicAnalyzer:
             if clean.startswith("```"):
                 parts = clean.split("```")
                 clean = parts[1] if len(parts) > 1 else clean
-                if clean.startswith("json"):
-                    clean = clean[4:]
+                if clean.lower().startswith("json"):
+                    clean = clean[4:].strip()
             parsed = json.loads(clean.strip())
             if not isinstance(parsed, dict):
-                return dict(_EMPTY)
+                return {"routines": [], "correlations": [], "anomalies": []}
             return {
                 "routines": parsed.get("routines", []),
                 "correlations": parsed.get("correlations", []),
@@ -189,4 +188,4 @@ class AnthropicAnalyzer:
             }
         except json.JSONDecodeError as e:
             _LOGGER.warning("AnthropicAnalyzer: JSON parse error: %s | raw: %.300s", e, raw)
-            return dict(_EMPTY)
+            return {"routines": [], "correlations": [], "anomalies": []}
