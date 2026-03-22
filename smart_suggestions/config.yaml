@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "2.0.7"
+version: "2.0.8"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -24,7 +24,7 @@ options:
   refresh_interval: 10
   max_suggestions: 7
   history_hours: 4
-  analysis_depth_days: 14
+  analysis_depth_days: 7
   analysis_schedule: "03:00"
   analysis_interval_hours: 6
   ai_provider: "anthropic"
