@@ -507,6 +507,7 @@ class WSServer:
         self._app.router.add_get("/logs", self._logs_handler)
         self._app.router.add_get("/status", self._status_handler)
         self._app.router.add_post("/analyze", self._analyze_handler)
+        self._app.router.add_post("/save_automation", self._handle_post_save_automation)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
         self._last_status: str = "idle"
@@ -515,6 +516,7 @@ class WSServer:
         self._feedback_cb = None
         self._refresh_cb = None
         self._analyze_cb = None
+        self._automation_handler = None
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
         self._system_status: dict = {}
 
@@ -526,6 +528,31 @@ class WSServer:
 
     def register_analyze_handler(self, cb) -> None:
         self._analyze_cb = cb
+
+    def register_automation_handler(self, handler) -> None:
+        self._automation_handler = handler
+
+    async def broadcast_automation_result(self, result: dict) -> None:
+        msg = json.dumps({"type": "automation_result", **result})
+        for ws in list(self._clients):
+            try:
+                await ws.send_str(msg)
+            except Exception:
+                pass
+
+    async def _handle_save_automation(self, suggestion: dict) -> None:
+        if self._automation_handler:
+            await self._automation_handler(suggestion)
+        else:
+            _LOGGER.warning("save_automation received but no handler registered")
+
+    async def _handle_post_save_automation(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        asyncio.get_running_loop().create_task(self._handle_save_automation(data.get("suggestion", {})))
+        return web.json_response({"status": "queued"})
 
     def set_feedback(self, feedback: dict) -> None:
         self._feedback = feedback
@@ -638,7 +665,15 @@ class WSServer:
 
         try:
             async for msg in ws:
-                pass
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        msg_type = data.get("type", "")
+                        if msg_type == "save_automation":
+                            suggestion = data.get("suggestion", {})
+                            asyncio.get_running_loop().create_task(self._handle_save_automation(suggestion))
+                    except Exception as e:
+                        _LOGGER.debug("WS message parse error: %s", e)
         except Exception:
             pass
         finally:
@@ -661,9 +696,6 @@ class WSServer:
             except Exception:
                 dead.add(ws)
         self._clients -= dead
-
-    async def broadcast_token(self, token: str) -> None:
-        await self.broadcast({"type": "streaming", "token": token})
 
     async def broadcast_suggestions(self, suggestions: list) -> None:
         self._last_suggestions = suggestions
