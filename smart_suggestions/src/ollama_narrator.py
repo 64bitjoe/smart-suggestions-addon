@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 import aiohttp
 
@@ -14,6 +15,15 @@ class OllamaNarrator:
     def __init__(self, ollama_url: str, model: str) -> None:
         self._url = ollama_url.rstrip("/")
         self._model = model
+        self._session: aiohttp.ClientSession | None = None
+
+    async def start(self) -> None:
+        self._session = aiohttp.ClientSession()
+
+    async def stop(self) -> None:
+        if self._session:
+            await self._session.close()
+            self._session = None
 
     async def narrate(self, candidates: list[dict]) -> list[dict]:
         """Rewrite 'reason' fields for all candidates. Returns candidates unchanged on any failure."""
@@ -27,7 +37,7 @@ class OllamaNarrator:
             return candidates
 
     async def _call_ollama(self, candidates: list[dict]) -> str:
-        now_str = __import__("datetime").datetime.now().strftime("%H:%M on %A")
+        now_str = datetime.now().strftime("%H:%M on %A")
         input_json = json.dumps([
             {"entity_id": c["entity_id"], "name": c["name"], "type": c.get("type"), "reason": c.get("reason", "")}
             for c in candidates
@@ -42,16 +52,22 @@ Return ONLY a valid JSON array (no markdown):
 
 One object per input item, in the same order. Do not add or remove items."""
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self._url}/api/generate",
-                json={"model": self._model, "prompt": prompt, "stream": False},
-                timeout=_TIMEOUT,
-            ) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Ollama returned HTTP {resp.status}")
-                data = await resp.json()
-                return data.get("response", "")
+        session = self._session
+        if session:
+            return await self._post(session, prompt)
+        async with aiohttp.ClientSession() as tmp_session:
+            return await self._post(tmp_session, prompt)
+
+    async def _post(self, session: aiohttp.ClientSession, prompt: str) -> str:
+        async with session.post(
+            f"{self._url}/api/generate",
+            json={"model": self._model, "prompt": prompt, "stream": False},
+            timeout=_TIMEOUT,
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Ollama returned HTTP {resp.status}")
+            data = await resp.json()
+            return data.get("response", "")
 
     def _apply_reasons(self, candidates: list[dict], raw: str) -> list[dict]:
         """Apply narrated reasons. Falls back to original for any missing/failed items."""
@@ -61,7 +77,7 @@ One object per input item, in the same order. Do not add or remove items."""
                 parts = clean.split("```")
                 clean = parts[1] if len(parts) > 1 else clean
                 if clean.startswith("json"):
-                    clean = clean[4:]
+                    clean = clean[4:].strip()
             narrated = json.loads(clean.strip())
             if not isinstance(narrated, list):
                 return candidates
