@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Any, TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     from ha_client import HAClient
 
@@ -15,7 +17,8 @@ _LOGGER = logging.getLogger(__name__)
 def _build_automation_prompt(ctx: dict) -> str:
     entity_id = ctx.get("entity_id", "")
     name = ctx.get("name", entity_id)
-    typical_time = ctx.get("typical_time", "18:00")
+    raw_time = ctx.get("typical_time", "18:00")
+    typical_time = ":".join(str(raw_time).split(":")[:2])
     days = ctx.get("days", [])
     days_str = ", ".join(days) if days else "daily"
     weekday_list = "[" + ", ".join(d.lower() for d in days) + "]" if days else "[]"
@@ -56,6 +59,8 @@ class AutomationBuilder:
             elif provider == "openai_compatible":
                 import openai
                 self._client = openai.OpenAI(api_key=api_key, base_url=base_url or None)
+            else:
+                _LOGGER.warning("AutomationBuilder: unknown AI provider: %s", provider)
         except ImportError as e:
             _LOGGER.error("AutomationBuilder: could not import SDK: %s", e)
 
@@ -73,10 +78,17 @@ class AutomationBuilder:
             _LOGGER.error("AutomationBuilder: AI call failed: %s", e)
             return {"success": False, "error": str(e), "yaml": ""}
 
+        # Strip markdown code fences the AI may have added despite being told not to
+        clean_yaml = raw_yaml.strip()
+        if clean_yaml.startswith("```"):
+            parts = clean_yaml.split("```")
+            clean_yaml = parts[1] if len(parts) > 1 else clean_yaml
+            if clean_yaml.lower().startswith("yaml"):
+                clean_yaml = clean_yaml[4:].strip()
+
         # Parse YAML to dict for HA REST API
         try:
-            import yaml
-            config_dict = yaml.safe_load(raw_yaml)
+            config_dict = yaml.safe_load(clean_yaml)
             if not isinstance(config_dict, dict):
                 raise ValueError("YAML did not produce a dict")
         except Exception as e:
@@ -95,6 +107,8 @@ class AutomationBuilder:
                 max_tokens=512,
                 messages=[{"role": "user", "content": prompt}],
             )
+            if not message.content:
+                raise ValueError("Anthropic returned empty content list")
             return message.content[0].text
         else:
             response = self._client.chat.completions.create(
@@ -102,4 +116,6 @@ class AutomationBuilder:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=512,
             )
+            if not response.choices:
+                raise ValueError("OpenAI returned empty choices")
             return response.choices[0].message.content

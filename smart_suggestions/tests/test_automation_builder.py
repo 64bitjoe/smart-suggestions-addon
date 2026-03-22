@@ -82,3 +82,23 @@ async def test_build_returns_error_when_no_client():
     ctx = {"entity_id": "scene.evening", "name": "Evening", "typical_time": "18:30", "days": ["Mon"]}
     result = await builder.build(ctx, MagicMock())
     assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_returns_error_on_invalid_yaml():
+    """When _call_api returns non-YAML content, build() should return success=False with the raw text."""
+    invalid_text = "this is not yaml: : : invalid"
+    mock_message = MagicMock()
+    mock_message.content = [MagicMock(text=invalid_text)]
+    mock_ai_client = MagicMock()
+    mock_ai_client.messages = MagicMock()
+    mock_ai_client.messages.create = MagicMock(return_value=mock_message)
+
+    builder = AutomationBuilder(ai_provider="anthropic", ai_api_key="test", ai_model="claude-opus-4-5")
+    builder._client = mock_ai_client
+
+    ctx = {"entity_id": "scene.evening", "name": "Evening", "typical_time": "18:30", "days": ["Mon"]}
+    result = await builder.build(ctx, MagicMock())
+    assert result["success"] is False
+    assert "error" in result
+    assert result["yaml"] == invalid_text
