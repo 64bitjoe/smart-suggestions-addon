@@ -279,9 +279,9 @@ class SmartSuggestionsAddon:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
-        await self._ha.start()
         loop.create_task(self._correlation_loop())
         loop.create_task(self._nightly_analysis_scheduler())
+        await self._ha.start()  # blocks forever — keeps event loop alive
 
     async def _shutdown(self) -> None:
         _LOGGER.info("Shutting down...")
