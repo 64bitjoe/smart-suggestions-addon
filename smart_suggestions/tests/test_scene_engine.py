@@ -92,3 +92,17 @@ def test_confidence_label_assigned():
     result = engine.rank(candidates, states={}, feedback={})
     scene = next(c for c in result if c["entity_id"] == "scene.evening")
     assert scene["confidence"] == "high"  # score=85 with routine_match=True → high
+
+
+def test_confidence_label_medium():
+    engine = SceneEngine(max_suggestions=5)
+    candidates = [make_candidate("light.kitchen", score=50)]
+    result = engine.rank(candidates, states={}, feedback={})
+    assert result[0]["confidence"] == "medium"  # 40 <= 50 < 70, no routine_match → medium
+
+
+def test_confidence_label_low():
+    engine = SceneEngine(max_suggestions=5)
+    candidates = [make_candidate("light.kitchen", score=20)]
+    result = engine.rank(candidates, states={}, feedback={})
+    assert result[0]["confidence"] == "low"  # 20 < 40 → low
