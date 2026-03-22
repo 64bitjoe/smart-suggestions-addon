@@ -210,8 +210,9 @@ class SmartSuggestionsAddon:
                     _LOGGER.warning("Correlation loop error: %s", e)
 
     async def _nightly_analysis_scheduler(self) -> None:
-        # Wait for HAClient session to be ready before first-run analysis
-        await asyncio.sleep(5)
+        # Wait until states are loaded before first-run analysis
+        while self._running and not self._last_states:
+            await asyncio.sleep(1)
         # First-run: trigger immediately if store needs fresh analysis
         if self._pattern_store.needs_fresh_analysis(int(self._opts.get("analysis_depth_days", 14))):
             _LOGGER.info("First-run analysis triggered")
