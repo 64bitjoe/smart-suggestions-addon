@@ -17,3 +17,8 @@ _ACTION_DOMAINS = {
 
 # States that count as "inactive" for dormancy filtering
 _INACTIVE_STATES = {"off", "idle", "paused", "standby", "closed", "locked"}
+
+# Feedback scoring constants
+FEEDBACK_UPVOTE_MULTIPLIER = 8   # score boost per net upvote
+FEEDBACK_DOWNVOTE_MULTIPLIER = 10  # score penalty per net downvote
+FEEDBACK_HARD_EXCLUDE_THRESHOLD = -3  # net votes at or below this → hard exclude

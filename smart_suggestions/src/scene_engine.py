@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 
+from const import FEEDBACK_UPVOTE_MULTIPLIER, FEEDBACK_DOWNVOTE_MULTIPLIER, FEEDBACK_HARD_EXCLUDE_THRESHOLD
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -32,6 +34,8 @@ def _confidence_label(score: float, routine_match: bool) -> str:
 class SceneEngine:
     def __init__(self, max_suggestions: int = 7, confidence_threshold: float = 0.6) -> None:
         self._max = max_suggestions
+        # Note: confidence_threshold is passed through to callers for can_save_as_automation
+        # eligibility checks; it does not filter suggestions at the ranking layer.
         self._confidence_threshold = confidence_threshold
 
     def rank(self, candidates: list[dict], states: dict, feedback: dict) -> list[dict]:
@@ -44,18 +48,18 @@ class SceneEngine:
             net = 0
             if isinstance(fb, dict):
                 net = fb.get("up", 0) - fb.get("down", 0)
-            # Hard exclude: net vote <= -3
-            if net <= -3:
+            # Hard exclude: net vote <= FEEDBACK_HARD_EXCLUDE_THRESHOLD
+            if net <= FEEDBACK_HARD_EXCLUDE_THRESHOLD:
                 _LOGGER.info("Excluding hard-downvoted entity: %s", eid)
                 continue
             updated = dict(c)
-            updated["score"] = c.get("score", 0) + (net * 8 if net > 0 else net * 10)
+            updated["score"] = c.get("score", 0) + (net * FEEDBACK_UPVOTE_MULTIPLIER if net > 0 else net * FEEDBACK_DOWNVOTE_MULTIPLIER)
             updated["confidence"] = _confidence_label(updated["score"], c.get("routine_match", False))
             # Assign action if not already set
             if "action" not in updated:
                 if updated.get("domain") == "scene":
                     updated["action"] = "activate"
-                elif updated.get("current_state") == "on":
+                elif states.get(eid, {}).get("state", "") == "on":
                     updated["action"] = "turn_off"
                 else:
                     updated["action"] = "turn_on"

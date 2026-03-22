@@ -91,4 +91,4 @@ def test_confidence_label_assigned():
     ]
     result = engine.rank(candidates, states={}, feedback={})
     scene = next(c for c in result if c["entity_id"] == "scene.evening")
-    assert scene["confidence"] in ("high", "medium", "low")
+    assert scene["confidence"] == "high"  # score=85 with routine_match=True → high
