@@ -86,16 +86,18 @@ class SmartSuggestionsAddon:
             ollama_url=opts.get("ollama_url", "http://localhost:11434"),
             model=opts.get("ollama_model", "llama3.2"),
         )
+        _key = opts.get("ai_api_key", "")
+        _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
         self._analyzer = AnthropicAnalyzer(
             ai_provider=opts.get("ai_provider", "anthropic"),
-            ai_api_key=opts.get("ai_api_key", ""),
+            ai_api_key=_key,
             ai_model=opts.get("ai_model", "claude-opus-4-6"),
             analysis_depth_days=int(opts.get("analysis_depth_days", 14)),
             ai_base_url=opts.get("ai_base_url", ""),
         )
         self._automation_builder = AutomationBuilder(
             ai_provider=opts.get("ai_provider", "anthropic"),
-            ai_api_key=opts.get("ai_api_key", ""),
+            ai_api_key=_key,
             ai_model=opts.get("ai_model", "claude-opus-4-6"),
             ai_base_url=opts.get("ai_base_url", ""),
         )
