@@ -202,3 +202,36 @@ def test_merge_overwrites_existing_routine_by_entity_id(tmp_store):
     assert len(routines) == 1, f"Expected 1 routine, got {len(routines)}"
     assert routines[0]["name"] == "Morning v2"
     assert routines[0]["typical_time"] == "07:15"
+
+
+def test_merge_replaces_anomalies_entirely(tmp_store):
+    """Second merge with new anomalies should fully replace prior anomalies (not append)."""
+    first_anomaly = {
+        "routines": [],
+        "correlations": [],
+        "anomalies": [
+            {
+                "entity_id": "light.old",
+                "description": "was on too long",
+                "severity": "low",
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+            }
+        ],
+    }
+    second_anomaly = {
+        "routines": [],
+        "correlations": [],
+        "anomalies": [
+            {
+                "entity_id": "light.new",
+                "description": "door left open",
+                "severity": "high",
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+            }
+        ],
+    }
+    tmp_store.merge(first_anomaly)
+    tmp_store.merge(second_anomaly)
+    anomalies = tmp_store.get_active_anomalies()
+    assert len(anomalies) == 1
+    assert anomalies[0]["entity_id"] == "light.new"

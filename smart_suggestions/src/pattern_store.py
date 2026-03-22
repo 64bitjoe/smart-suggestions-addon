@@ -32,9 +32,13 @@ def _parse_dt(s: str) -> datetime | None:
 
 
 def _is_expired(entry: dict) -> bool:
-    expires_at = _parse_dt(entry.get("expires_at", ""))
+    raw = entry.get("expires_at", "")
+    if not raw:
+        return False  # No expiry set — treat as live
+    expires_at = _parse_dt(raw)
     if expires_at is None:
-        return False
+        _LOGGER.warning("PatternStore: unparseable expires_at %r — treating as expired", raw)
+        return True
     return _now_utc() > expires_at
 
 
@@ -112,7 +116,7 @@ class PatternStore:
         """Merge new patterns into the store. Overwrites by entity_id for routines/correlations."""
         now = _now_utc()
         if "routines" in patterns:
-            existing = {r["entity_id"]: r for r in self._data.get("routines", [])}
+            existing = {r["entity_id"]: r for r in self._data.get("routines", []) if "entity_id" in r}
             for r in patterns["routines"]:
                 if not isinstance(r, dict):
                     continue
@@ -122,21 +126,28 @@ class PatternStore:
                 if "expires_at" not in r:
                     ttl_hours = _TTL_ANTHROPIC_DAYS * 24 if r.get("source") == "anthropic" else _TTL_STATISTICAL_HOURS
                     r["expires_at"] = (now + timedelta(hours=ttl_hours)).isoformat()
-                existing[r["entity_id"]] = r
+                eid = r.get("entity_id")
+                if not eid:
+                    _LOGGER.warning("PatternStore: skipping routine with missing entity_id")
+                    continue
+                existing[eid] = r
             self._data["routines"] = list(existing.values())
         if "correlations" in patterns:
-            key = lambda c: (c.get("entity_a"), c.get("entity_b"))
-            existing = {key(c): c for c in self._data.get("correlations", [])}
+            existing = {(c.get("entity_a"), c.get("entity_b")): c for c in self._data.get("correlations", []) if c.get("entity_a") and c.get("entity_b")}
             for c in patterns["correlations"]:
                 if not isinstance(c, dict):
                     continue
                 c = dict(c)
                 if "source" not in c:
                     c["source"] = "statistical"
-                if "expires_at" not in c:
-                    ttl_hours = _TTL_ANTHROPIC_DAYS * 24 if c.get("source") == "anthropic" else _TTL_STATISTICAL_HOURS
-                    c["expires_at"] = (now + timedelta(hours=ttl_hours)).isoformat()
-                existing[key(c)] = c
+                ea = c.get("entity_a")
+                eb = c.get("entity_b")
+                if not ea or not eb:
+                    _LOGGER.warning("PatternStore: skipping correlation with missing entity_a/entity_b")
+                    continue
+                ttl_hours = _TTL_ANTHROPIC_DAYS * 24 if c.get("source") == "anthropic" else _TTL_STATISTICAL_HOURS
+                c["expires_at"] = (now + timedelta(hours=ttl_hours)).isoformat()
+                existing[(ea, eb)] = c
             self._data["correlations"] = list(existing.values())
         if "anomalies" in patterns:
             new_anomalies = []
