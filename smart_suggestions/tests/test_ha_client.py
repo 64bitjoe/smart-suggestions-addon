@@ -1,8 +1,6 @@
 # smart_suggestions/tests/test_ha_client.py
 import pytest
-import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from aiohttp import web
 
 
 @pytest.mark.asyncio
@@ -47,7 +45,7 @@ async def test_create_automation_http_error():
 
     result = await client.create_automation({"alias": "Test"})
     assert result["success"] is False
-    assert "error" in result
+    assert "HTTP 400" in result["error"]
 
 
 @pytest.mark.asyncio

@@ -190,8 +190,8 @@ class SmartSuggestionsAddon:
             await self._ws_server.broadcast_status("updating")
             try:
                 history = await self._ha.fetch_history(HISTORY_HOURS)
-                dow_history = await self._ha.fetch_dow_history()
-                ctx = build_context(states, history, self._feedback, dow_history=dow_history)
+                # TODO: replaced in Task 11 (main.py rewrite)
+                ctx = build_context(states, history, self._feedback)
                 prompt = build_prompt(ctx, MAX_SUGGESTIONS, patterns=self._patterns or None)
 
                 loop = asyncio.get_running_loop()
