@@ -96,7 +96,7 @@ Rules:
 - Only patterns with 3+ occurrences
 - Use exact entity_ids from the history data
 - Return empty arrays if no confident patterns found
-- Max 5 items per category
+- Max 20 items per category
 - Days use 3-letter abbreviations: Mon,Tue,Wed,Thu,Fri,Sat,Sun"""
 
 
@@ -157,7 +157,7 @@ class AnthropicAnalyzer:
         if self._provider == "anthropic":
             message = self._client.messages.create(
                 model=self._model,
-                max_tokens=4096,
+                max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}],
             )
             return message.content[0].text
