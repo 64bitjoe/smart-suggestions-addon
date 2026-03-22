@@ -128,11 +128,21 @@ class SmartSuggestionsAddon:
         }
         self._ws_server.set_system_status(status)
 
+    def _push_stored_patterns(self) -> None:
+        patterns = {
+            "routines": self._pattern_store.get_routines(),
+            "correlations": self._pattern_store.get_correlations(),
+            "anomalies": self._pattern_store.get_active_anomalies(),
+        }
+        if any(patterns.values()):
+            self._ws_server.set_patterns(patterns)
+
     async def _on_states_ready(self, states: dict) -> None:
         self._last_states = states
         if not self._ha_connected:
             self._ha_connected = True
             self._push_system_status()
+            self._push_stored_patterns()
         await self._run_refresh_cycle(states)
 
     async def _run_refresh_cycle(self, states: dict) -> None:
@@ -180,7 +190,7 @@ class SmartSuggestionsAddon:
             patterns = await self._analyzer.analyze(history, self._last_states)
             if any(patterns.values()):
                 self._pattern_store.merge(patterns)
-                self._ws_server.set_patterns(patterns)
+                self._push_stored_patterns()
                 self._last_analysis_str = datetime.now().strftime("%H:%M:%S")
                 self._push_system_status()
                 _LOGGER.info(
