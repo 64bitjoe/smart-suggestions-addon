@@ -157,7 +157,7 @@ class AnthropicAnalyzer:
         if self._provider == "anthropic":
             message = self._client.messages.create(
                 model=self._model,
-                max_tokens=1024,
+                max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
             return message.content[0].text
