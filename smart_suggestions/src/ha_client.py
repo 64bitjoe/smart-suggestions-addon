@@ -93,7 +93,7 @@ class HAClient:
             entity_ids_str = ",".join(chunk)
             url = yarl.URL(
                 f"{HA_REST_BASE}/history/period/{start}"
-                f"?filter_entity_id={entity_ids_str}&significant_changes_only=1&minimal_response=1&no_attributes=1",
+                f"?filter_entity_id={entity_ids_str}&significant_changes_only=1&no_attributes=1",
                 encoded=True,
             )
             try:
