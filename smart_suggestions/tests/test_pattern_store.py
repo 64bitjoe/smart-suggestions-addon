@@ -162,3 +162,43 @@ def test_recent_updated_at_does_not_trigger(tmp_store):
     tmp_store._save()
     store2 = PatternStore(path=tmp_store._path)
     assert store2.needs_fresh_analysis(analysis_depth_days=14) is False
+
+
+def test_merge_overwrites_existing_routine_by_entity_id(tmp_store):
+    """Merging a routine with the same entity_id should replace, not duplicate."""
+    first = {
+        "routines": [
+            {
+                "name": "Morning v1",
+                "entity_id": "scene.morning",
+                "typical_time": "07:00",
+                "days": ["Mon"],
+                "confidence": 0.7,
+                "last_seen": "2026-03-20T07:00:00",
+                "source": "statistical",
+            }
+        ],
+        "correlations": [],
+        "anomalies": [],
+    }
+    second = {
+        "routines": [
+            {
+                "name": "Morning v2",
+                "entity_id": "scene.morning",
+                "typical_time": "07:15",
+                "days": ["Mon", "Tue"],
+                "confidence": 0.9,
+                "last_seen": "2026-03-21T07:15:00",
+                "source": "statistical",
+            }
+        ],
+        "correlations": [],
+        "anomalies": [],
+    }
+    tmp_store.merge(first)
+    tmp_store.merge(second)
+    routines = tmp_store.get_routines()
+    assert len(routines) == 1, f"Expected 1 routine, got {len(routines)}"
+    assert routines[0]["name"] == "Morning v2"
+    assert routines[0]["typical_time"] == "07:15"
