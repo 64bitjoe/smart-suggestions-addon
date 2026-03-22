@@ -6,8 +6,6 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Callable
-from urllib.parse import urlencode
-
 import aiohttp
 import yarl
 
@@ -90,13 +88,14 @@ class HAClient:
 
         result: dict[str, list] = {}
         for chunk in chunks:
-            qs = urlencode({
-                "filter_entity_id": ",".join(chunk),
-                "significant_changes_only": "1",
-                "minimal_response": "1",
-                "no_attributes": "1",
-            })
-            url = yarl.URL(f"{HA_REST_BASE}/history/period/{start}?{qs}", encoded=True)
+            # Build URL with literal commas — urlencode would encode them as %2C,
+            # causing HA to treat the entire list as one unknown entity ID.
+            entity_ids_str = ",".join(chunk)
+            url = yarl.URL(
+                f"{HA_REST_BASE}/history/period/{start}"
+                f"?filter_entity_id={entity_ids_str}&significant_changes_only=1&minimal_response=1&no_attributes=1",
+                encoded=True,
+            )
             try:
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status != 200:
