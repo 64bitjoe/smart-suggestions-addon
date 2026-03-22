@@ -171,7 +171,7 @@ class SmartSuggestionsAddon:
                 self._push_system_status()
 
     async def _run_analysis(self) -> None:
-        if not self._last_states:
+        if not self._last_states or not self._ha:
             return
         try:
             history = await self._ha.fetch_history(self._opts.get("analysis_depth_days", 14) * 24)
@@ -193,7 +193,7 @@ class SmartSuggestionsAddon:
         interval = int(self._opts.get("analysis_interval_hours", 6)) * 3600
         while self._running:
             await asyncio.sleep(interval)
-            if self._last_states:
+            if self._last_states and self._ha:
                 try:
                     history = await self._ha.fetch_history(
                         int(self._opts.get("analysis_depth_days", 14)) * 24
