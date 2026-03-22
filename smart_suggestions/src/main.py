@@ -89,14 +89,14 @@ class SmartSuggestionsAddon:
         self._analyzer = AnthropicAnalyzer(
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=opts.get("ai_api_key", ""),
-            ai_model=opts.get("ai_model", "claude-opus-4-5"),
+            ai_model=opts.get("ai_model", "claude-opus-4-6"),
             analysis_depth_days=int(opts.get("analysis_depth_days", 14)),
             ai_base_url=opts.get("ai_base_url", ""),
         )
         self._automation_builder = AutomationBuilder(
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=opts.get("ai_api_key", ""),
-            ai_model=opts.get("ai_model", "claude-opus-4-5"),
+            ai_model=opts.get("ai_model", "claude-opus-4-6"),
             ai_base_url=opts.get("ai_base_url", ""),
         )
         self._ha: HAClient | None = None
