@@ -71,7 +71,8 @@ Return ONLY a valid JSON object (no markdown, no explanation):
       "entity_id": "exact_entity_id_from_history",
       "typical_time": "HH:MM",
       "days": ["Mon","Tue","Wed","Thu","Fri"],
-      "confidence": 0.0
+      "confidence": 0.0,
+      "instances": 3
     }}
   ],
   "correlations": [
@@ -80,7 +81,8 @@ Return ONLY a valid JSON object (no markdown, no explanation):
       "entity_b": "exact_entity_id",
       "pattern": "one sentence description",
       "confidence": 0.0,
-      "window_minutes": 5
+      "window_minutes": 5,
+      "instances": 3
     }}
   ],
   "anomalies": [

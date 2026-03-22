@@ -180,6 +180,7 @@ class SmartSuggestionsAddon:
             patterns = await self._analyzer.analyze(history, self._last_states)
             if any(patterns.values()):
                 self._pattern_store.merge(patterns)
+                self._ws_server.set_patterns(patterns)
                 self._last_analysis_str = datetime.now().strftime("%H:%M:%S")
                 self._push_system_status()
                 _LOGGER.info(

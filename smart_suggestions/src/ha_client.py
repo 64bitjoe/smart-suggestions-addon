@@ -165,6 +165,21 @@ class HAClient:
         except Exception as e:
             _LOGGER.warning("Error writing HA state: %s", e)
 
+    async def send_notification(self, title: str, message: str, notification_id: str = "smart_suggestions") -> None:
+        """Create a HA persistent notification (shows in the bell icon)."""
+        if not self._session:
+            return
+        try:
+            async with self._session.post(
+                f"{self._base}/services/persistent_notification/create",
+                json={"title": title, "message": message, "notification_id": notification_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status not in (200, 201):
+                    _LOGGER.warning("Failed to send notification: HTTP %s", resp.status)
+        except Exception as e:
+            _LOGGER.warning("Error sending notification: %s", e)
+
     async def create_automation(self, config_dict: dict) -> dict:
         """Create a new HA automation via REST. Returns {success, automation_id} or {success, error}."""
         if not self._session:

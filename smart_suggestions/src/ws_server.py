@@ -132,6 +132,32 @@ _UI_HTML = """<!DOCTYPE html>
   .log-msg { color: #bbb; word-break: break-all; }
   .log-empty { color: #444; font-style: italic; }
 
+  /* ── Patterns panel ── */
+  .pattern-section-header { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8E8E93; padding: 12px 4px 6px; }
+  .pattern-section-header:first-child { padding-top: 0; }
+  .pattern-card { background: #1C1C1E; border-radius: 12px; padding: 14px 16px; margin-bottom: 8px; }
+  .pattern-card:last-child { margin-bottom: 0; }
+  .pattern-top { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+  .pattern-icon { font-size: 22px; flex-shrink: 0; padding-top: 1px; }
+  .pattern-info { flex: 1; min-width: 0; }
+  .pattern-name { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .pattern-desc { font-size: 13px; color: #8E8E93; line-height: 1.4; }
+  .pattern-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 20px; }
+  .badge-time { background: rgba(0,122,255,0.18); color: #4DA6FF; }
+  .badge-days { background: rgba(52,199,89,0.15); color: #34C759; }
+  .badge-conf { background: rgba(255,159,10,0.15); color: #FF9F0A; }
+  .badge-inst { background: rgba(175,82,222,0.18); color: #BF7AF0; }
+  .badge-sev-low { background: rgba(255,159,10,0.15); color: #FF9F0A; }
+  .badge-sev-medium { background: rgba(255,149,0,0.2); color: #FF9500; }
+  .badge-sev-high { background: rgba(255,59,48,0.2); color: #FF3B30; }
+  .pattern-actions { display: flex; gap: 8px; }
+  .pattern-btn { flex: 1; padding: 9px 12px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s, transform 0.1s; -webkit-tap-highlight-color: transparent; }
+  .pattern-btn:active { transform: scale(0.96); opacity: 0.8; }
+  .pattern-btn-auto { background: rgba(0,122,255,0.2); color: #007AFF; }
+  .pattern-btn-nah { background: rgba(255,255,255,0.08); color: #8E8E93; }
+  .pattern-empty { text-align: center; padding: 20px; color: #636366; font-size: 14px; }
+
   /* ── Toast ── */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #2C2C2E; color: #fff; padding: 10px 18px; border-radius: 20px; font-size: 14px; font-weight: 500; transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); pointer-events: none; white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
   .toast.show { transform: translateX(-50%) translateY(0); }
@@ -158,6 +184,16 @@ _UI_HTML = """<!DOCTYPE html>
   <div class="panel-body" id="status-panel">
     <div id="status-content" style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px 16px;font-size:13px;line-height:1.7;font-family:'SF Mono','Menlo',monospace;">Loading…</div>
     <button class="refresh-btn" id="analyze-btn" style="margin-top:10px;width:100%;justify-content:center;">🧠 Run Pattern Analysis Now</button>
+  </div>
+</div>
+
+<div class="panel-wrap" id="patterns-panel-wrap" style="display:none">
+  <button class="panel-toggle" id="patterns-toggle">
+    <span>🧠 What I Learned <span id="patterns-badge" style="background:rgba(175,82,222,0.25);color:#BF7AF0;font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle;"></span></span>
+    <span id="patterns-arrow">▶</span>
+  </button>
+  <div class="panel-body" id="patterns-panel">
+    <div id="patterns-content"></div>
   </div>
 </div>
 
@@ -194,6 +230,8 @@ let _feedback = __FEEDBACK__;
 let _suggestions = __SUGGESTIONS__;
 let _entities = [];
 let _status = 'idle';
+let _patterns = null;
+let _dismissedPatterns = new Set(JSON.parse(sessionStorage.getItem('dismissedPatterns') || '[]'));
 
 function net(eid) {
   const f = _feedback[eid];
@@ -421,6 +459,7 @@ function connectWS() {
     else if (msg.type === 'status') { _status = msg.state || 'idle'; render(); }
     else if (msg.type === 'log') { appendLog(msg); }
     else if (msg.type === 'system_status') { renderStatusData(msg.data); }
+    else if (msg.type === 'patterns') { _patterns = msg.data; updatePatternsBadge(); if (_patternsOpen) renderPatterns(); }
   });
   ws.addEventListener('close', () => {
     document.getElementById('status-dot').className = 'status-dot';
@@ -485,6 +524,143 @@ document.getElementById('analyze-btn').addEventListener('click', async () => {
   }, 3000);
 });
 
+// ── Patterns panel ──
+let _patternsOpen = false;
+document.getElementById('patterns-toggle').addEventListener('click', () => {
+  _patternsOpen = !_patternsOpen;
+  document.getElementById('patterns-panel').classList.toggle('open', _patternsOpen);
+  document.getElementById('patterns-arrow').textContent = _patternsOpen ? '▼' : '▶';
+  if (_patternsOpen && _patterns) renderPatterns();
+});
+
+function pct(v) { return Math.round((v || 0) * 100) + '%'; }
+
+function makePatternRoutineCard(r, key) {
+  if (_dismissedPatterns.has(key)) return '';
+  const days = Array.isArray(r.days) ? r.days.join(' ') : (r.days || '');
+  const inst = r.instances ? `<span class="badge badge-inst">×${r.instances}</span>` : '';
+  const time = r.typical_time ? `<span class="badge badge-time">⏰ ${r.typical_time}</span>` : '';
+  const daysB = days ? `<span class="badge badge-days">${days}</span>` : '';
+  const conf = `<span class="badge badge-conf">${pct(r.confidence)} conf</span>`;
+  return `<div class="pattern-card" id="pc-${key}">
+    <div class="pattern-top">
+      <div class="pattern-icon">🔁</div>
+      <div class="pattern-info">
+        <div class="pattern-name">${escHtml(r.name || r.entity_id)}</div>
+        <div class="pattern-desc">${escHtml(r.entity_id)}</div>
+      </div>
+    </div>
+    <div class="pattern-meta">${time}${daysB}${conf}${inst}</div>
+    <div class="pattern-actions">
+      <button class="pattern-btn pattern-btn-auto" data-key="${key}" data-eid="${escHtml(r.entity_id)}" data-name="${escHtml(r.name||r.entity_id)}" data-type="routine">Automate it! 🚀</button>
+      <button class="pattern-btn pattern-btn-nah" data-key="${key}" data-dismiss="1">Nah</button>
+    </div>
+  </div>`;
+}
+
+function makePatternCorrelCard(c, key) {
+  if (_dismissedPatterns.has(key)) return '';
+  const inst = c.instances ? `<span class="badge badge-inst">×${c.instances}</span>` : '';
+  const conf = `<span class="badge badge-conf">${pct(c.confidence)} conf</span>`;
+  const win = c.window_minutes ? `<span class="badge badge-time">within ${c.window_minutes}m</span>` : '';
+  return `<div class="pattern-card" id="pc-${key}">
+    <div class="pattern-top">
+      <div class="pattern-icon">🔗</div>
+      <div class="pattern-info">
+        <div class="pattern-name">${escHtml(c.entity_a)} → ${escHtml(c.entity_b)}</div>
+        <div class="pattern-desc">${escHtml(c.pattern || '')}</div>
+      </div>
+    </div>
+    <div class="pattern-meta">${win}${conf}${inst}</div>
+    <div class="pattern-actions">
+      <button class="pattern-btn pattern-btn-auto" data-key="${key}" data-eid="${escHtml(c.entity_b)}" data-eid-a="${escHtml(c.entity_a)}" data-name="${escHtml(c.pattern||c.entity_b)}" data-type="correlation">Automate it! 🚀</button>
+      <button class="pattern-btn pattern-btn-nah" data-key="${key}" data-dismiss="1">Nah</button>
+    </div>
+  </div>`;
+}
+
+function makePatternAnomalyCard(a, key) {
+  if (_dismissedPatterns.has(key)) return '';
+  const sevClass = 'badge-sev-' + (a.severity || 'low');
+  const sev = `<span class="badge ${sevClass}">⚠️ ${a.severity || 'low'}</span>`;
+  return `<div class="pattern-card" id="pc-${key}">
+    <div class="pattern-top">
+      <div class="pattern-icon">🚨</div>
+      <div class="pattern-info">
+        <div class="pattern-name">${escHtml(a.entity_id)}</div>
+        <div class="pattern-desc">${escHtml(a.description || '')}</div>
+      </div>
+    </div>
+    <div class="pattern-meta">${sev}</div>
+    <div class="pattern-actions">
+      <button class="pattern-btn pattern-btn-nah" data-key="${key}" data-dismiss="1">Dismiss</button>
+    </div>
+  </div>`;
+}
+
+function renderPatterns() {
+  const el = document.getElementById('patterns-content');
+  if (!_patterns) { el.innerHTML = '<div class="pattern-empty">No pattern analysis yet. Hit "Run Pattern Analysis Now" in System Status.</div>'; return; }
+  const routines = (_patterns.routines || []).filter(r => !_dismissedPatterns.has('r_' + r.entity_id + '_' + (r.name||'')));
+  const correls = (_patterns.correlations || []).filter(c => !_dismissedPatterns.has('c_' + c.entity_a + '_' + c.entity_b));
+  const anomalies = (_patterns.anomalies || []).filter(a => !_dismissedPatterns.has('a_' + a.entity_id));
+  let html = '';
+  if (routines.length) {
+    html += '<div class="pattern-section-header">🔁 Daily Routines</div>';
+    html += routines.map(r => makePatternRoutineCard(r, 'r_' + r.entity_id + '_' + (r.name||''))).join('');
+  }
+  if (correls.length) {
+    html += '<div class="pattern-section-header">🔗 Entity Correlations</div>';
+    html += correls.map(c => makePatternCorrelCard(c, 'c_' + c.entity_a + '_' + c.entity_b)).join('');
+  }
+  if (anomalies.length) {
+    html += '<div class="pattern-section-header">🚨 Anomalies</div>';
+    html += anomalies.map(a => makePatternAnomalyCard(a, 'a_' + a.entity_id)).join('');
+  }
+  if (!html) html = '<div class="pattern-empty">All patterns reviewed — nice work! 🎉</div>';
+  el.innerHTML = html;
+
+  // Wire up buttons
+  el.querySelectorAll('.pattern-btn-nah[data-dismiss]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.key;
+      _dismissedPatterns.add(key);
+      sessionStorage.setItem('dismissedPatterns', JSON.stringify([..._dismissedPatterns]));
+      const card = document.getElementById('pc-' + key);
+      if (card) card.style.transition = 'opacity 0.25s'; if (card) card.style.opacity = '0';
+      setTimeout(() => { renderPatterns(); updatePatternsBadge(); }, 260);
+    });
+  });
+  el.querySelectorAll('.pattern-btn-auto').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const eid = btn.dataset.eid;
+      const name = btn.dataset.name;
+      const type = btn.dataset.type;
+      btn.textContent = '⏳ Building…'; btn.disabled = true;
+      try {
+        const suggestion = { entity_id: eid, name: name, automation_context: { trigger_type: type, entity_a: btn.dataset.eidA } };
+        const resp = await fetch(BASE + '/save_automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ suggestion }) });
+        showToast('🚀 Automation queued — check logs!');
+        btn.textContent = '✅ Queued';
+      } catch { showToast('⚠️ Failed to queue'); btn.textContent = 'Automate it! 🚀'; btn.disabled = false; }
+    });
+  });
+}
+
+function updatePatternsBadge() {
+  if (!_patterns) return;
+  const total = (_patterns.routines||[]).length + (_patterns.correlations||[]).length + (_patterns.anomalies||[]).length;
+  const remaining = total - [..._dismissedPatterns].filter(k => {
+    return (_patterns.routines||[]).some(r => 'r_'+r.entity_id+'_'+(r.name||'') === k) ||
+           (_patterns.correlations||[]).some(c => 'c_'+c.entity_a+'_'+c.entity_b === k) ||
+           (_patterns.anomalies||[]).some(a => 'a_'+a.entity_id === k);
+  }).length;
+  const badge = document.getElementById('patterns-badge');
+  if (badge) badge.textContent = remaining > 0 ? remaining + ' patterns' : 'reviewed ✓';
+  const wrap = document.getElementById('patterns-panel-wrap');
+  if (wrap) wrap.style.display = '';
+}
+
 render();
 connectWS();
 </script>
@@ -519,6 +695,7 @@ class WSServer:
         self._automation_handler = None
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
         self._system_status: dict = {}
+        self._patterns: dict = {}
 
     def register_feedback_handler(self, cb) -> None:
         self._feedback_cb = cb
@@ -554,6 +731,15 @@ class WSServer:
 
     def set_known_entities(self, entities: list) -> None:
         self._known_entities = entities
+
+    def set_patterns(self, patterns: dict) -> None:
+        self._patterns = patterns
+        try:
+            import asyncio  # noqa: PLC0415
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.broadcast({"type": "patterns", "data": patterns}))
+        except RuntimeError:
+            pass
 
     def set_system_status(self, status: dict) -> None:
         self._system_status = status
@@ -657,6 +843,8 @@ class WSServer:
             await self._send(ws, {"type": "suggestions", "data": self._last_suggestions})
         if self._system_status:
             await self._send(ws, {"type": "system_status", "data": self._system_status})
+        if self._patterns:
+            await self._send(ws, {"type": "patterns", "data": self._patterns})
 
         try:
             async for msg in ws:
