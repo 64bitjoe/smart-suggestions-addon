@@ -86,8 +86,8 @@ def test_score_realtime_returns_scene_candidates(tmp_path):
     from pattern_store import PatternStore
     store = PatternStore(path=str(tmp_path / "patterns.json"))
 
-    # Add a routine for scene.evening matching current day/time
-    now = datetime.now()
+    # Add a routine for scene.evening matching current day/time (UTC, matching score_realtime)
+    now = datetime.now(timezone.utc)
     day_abbrev = now.strftime("%a")  # Mon, Tue, etc.
     typical_time = now.strftime("%H:%M")
     store.merge({"routines": [
@@ -115,7 +115,7 @@ def test_score_realtime_wrong_day_routine_not_boosted(tmp_path):
     from pattern_store import PatternStore
     store = PatternStore(path=str(tmp_path / "patterns.json"))
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     # Use a day that is NOT today
     all_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     today_abbrev = now.strftime("%a")
@@ -137,6 +137,39 @@ def test_score_realtime_wrong_day_routine_not_boosted(tmp_path):
     engine = StatisticalEngine(store)
     candidates = engine.score_realtime(states)
     scene_cand = next((c for c in candidates if c["entity_id"] == "scene.morning"), None)
-    # May appear (scene match path) but should not have high routine-based score
-    if scene_cand:
-        assert scene_cand.get("routine_match") is False or scene_cand["score"] < 50
+    # May appear (scene match path) but should not have a routine match
+    assert scene_cand is None or scene_cand.get("routine_match") is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_correlations_detects_cooccurrence(tmp_path):
+    """Entities that change state within window_minutes should produce a correlation."""
+    from datetime import datetime, timezone, timedelta
+    from pattern_store import PatternStore
+    from statistical_engine import StatisticalEngine
+
+    store = PatternStore(path=str(tmp_path / "patterns.json"))
+    engine = StatisticalEngine(store)
+
+    # Build history: tv turns on, then living room light turns on 2 min later, 4 times
+    base = datetime.now(timezone.utc)
+    tv_history = []
+    light_history = []
+    for i in range(4):
+        offset = timedelta(hours=i * 3)
+        tv_history.append({"entity_id": "media_player.tv", "state": "on", "last_changed": (base + offset).isoformat()})
+        light_history.append({"entity_id": "light.living_room", "state": "on", "last_changed": (base + offset + timedelta(minutes=2)).isoformat()})
+
+    history = {
+        "media_player.tv": tv_history,
+        "light.living_room": light_history,
+    }
+    states = {
+        "media_player.tv": {"attributes": {"friendly_name": "TV"}},
+        "light.living_room": {"attributes": {"friendly_name": "Living Room"}},
+    }
+
+    correlations = await engine.analyze_correlations(history, states, window_minutes=5)
+    assert len(correlations) >= 1
+    entity_pairs = [(c["entity_a"], c["entity_b"]) for c in correlations]
+    assert ("media_player.tv", "light.living_room") in entity_pairs

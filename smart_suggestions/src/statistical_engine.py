@@ -70,7 +70,7 @@ class StatisticalEngine:
 
     def score_realtime(self, states: dict) -> list[dict]:
         """Score all actionable entities. Scenes first. Returns sorted candidate list."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         routines_by_eid = {r["entity_id"]: r for r in self._store.get_routines()}
         correlations = self._store.get_correlations()
         anomalies_by_eid = {a["entity_id"]: a for a in self._store.get_active_anomalies()}
@@ -156,11 +156,10 @@ class StatisticalEngine:
 
     async def analyze_correlations(self, history: dict, states: dict, window_minutes: int = 5) -> list[dict]:
         """Background task: scan history for co-occurrence correlations. O(n²) — run infrequently."""
-        from const import _ACTION_DOMAINS as DOMAINS  # noqa
         # Filter to actionable entities with history
         action_eids = [
             eid for eid in history
-            if eid.split(".")[0] in DOMAINS and len(history[eid]) > 1
+            if eid.split(".")[0] in _ACTION_DOMAINS and len(history[eid]) > 1
         ]
 
         # Build event timeline: (timestamp, entity_id, state) sorted by time
@@ -186,6 +185,7 @@ class StatisticalEngine:
             if state_a in _INACTIVE_STATES or state_a in ("unavailable", "unknown"):
                 continue
             total_counts[eid_a] += 1
+            await asyncio.sleep(0)  # yield to event loop between iterations
             for j in range(i + 1, len(events)):
                 ts_b, eid_b, state_b = events[j]
                 if ts_b - ts_a > window:
