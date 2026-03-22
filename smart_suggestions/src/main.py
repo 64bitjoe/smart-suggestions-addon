@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import signal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pattern_store import PatternStore
 from statistical_engine import StatisticalEngine
@@ -122,6 +122,7 @@ class SmartSuggestionsAddon:
             "patterns_loaded": bool(self._pattern_store.get_routines()),
             "pattern_routines": len(self._pattern_store.get_routines()),
             "feedback_count": len(self._feedback),
+            "pattern_anomalies": len(self._pattern_store.get_active_anomalies()),
         }
         self._ws_server.set_system_status(status)
 
@@ -148,7 +149,7 @@ class SmartSuggestionsAddon:
                         self._narrator.narrate(ranked), timeout=15.0
                     )
                     self._ollama_connected = True
-                except (asyncio.TimeoutError, Exception) as e:
+                except Exception as e:
                     self._ollama_connected = False
                     _LOGGER.warning("Narration skipped: %s", e)
 
@@ -159,7 +160,8 @@ class SmartSuggestionsAddon:
                     suggestions = self._last_suggestions
 
                 await self._ws_server.broadcast_suggestions(suggestions)
-                await self._ha.write_suggestions_state(suggestions)
+                if self._ha:
+                    await self._ha.write_suggestions_state(suggestions)
                 self._last_refresh_str = datetime.now().strftime("%H:%M:%S")
                 self._push_system_status()
                 _LOGGER.info("Refresh complete: %d suggestions", len(suggestions))
@@ -222,14 +224,12 @@ class SmartSuggestionsAddon:
             now = datetime.now()
             target = now.replace(hour=h, minute=m, second=0, microsecond=0)
             if target <= now:
-                from datetime import timedelta
                 target = target + timedelta(days=1)
             sleep_seconds = (target - now).total_seconds()
             _LOGGER.info("Nightly analysis scheduled in %.0f seconds (at %s)", sleep_seconds, schedule_str)
             await asyncio.sleep(sleep_seconds)
             await self._run_analysis()
-            from datetime import timedelta as _td
-            await asyncio.sleep(max(0, (target + _td(days=1) - datetime.now()).total_seconds()))
+            # Loop back to top to recompute next occurrence
 
     async def _on_feedback(self, entity_id: str, vote: str) -> None:
         entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0})
