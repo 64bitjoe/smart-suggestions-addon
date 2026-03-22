@@ -276,6 +276,8 @@ class SmartSuggestionsAddon:
         self._ha = HAClient(
             on_states_ready=self._on_states_ready,
             refresh_interval_seconds=int(self._opts.get("refresh_interval", 10)),
+            ha_url=self._opts.get("ha_url", ""),
+            ha_token=self._opts.get("ha_token", ""),
         )
 
         loop = asyncio.get_running_loop()

@@ -1,4 +1,4 @@
-"""Home Assistant REST client — polls states via Supervisor proxy."""
+"""Home Assistant REST client — direct REST connection."""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +12,7 @@ import yarl
 _LOGGER = logging.getLogger(__name__)
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
-HA_REST_BASE = "http://supervisor/core/api"
+_DEFAULT_BASE = "http://supervisor/core/api"
 
 POLL_INTERVAL = 30          # seconds between state polls (keeps _states fresh)
 REFRESH_INTERVAL = 600      # seconds between Ollama refresh cycles (default 10 min)
@@ -21,22 +21,37 @@ REFRESH_INTERVAL = 600      # seconds between Ollama refresh cycles (default 10 
 class HAClient:
     """Polls HA states via REST and fetches history."""
 
-    def __init__(self, on_states_ready: Callable, refresh_interval_seconds: int = REFRESH_INTERVAL) -> None:
+    def __init__(
+        self,
+        on_states_ready: Callable,
+        refresh_interval_seconds: int = REFRESH_INTERVAL,
+        ha_url: str = "",
+        ha_token: str = "",
+    ) -> None:
         self._on_states_ready = on_states_ready
         self._refresh_interval = refresh_interval_seconds
+        # Prefer explicit ha_url/ha_token; fall back to Supervisor proxy
+        if ha_url and ha_token:
+            self._base = ha_url.rstrip("/") + "/api"
+            self._token = ha_token
+            _LOGGER.info("HAClient: using direct HA URL %s", self._base)
+        else:
+            self._base = _DEFAULT_BASE
+            self._token = SUPERVISOR_TOKEN
+            _LOGGER.info("HAClient: using Supervisor proxy")
         self._session: aiohttp.ClientSession | None = None
         self._states: dict = {}
         self._running = False
         self._last_refresh: float = 0.0
 
     async def start(self) -> None:
-        if not SUPERVISOR_TOKEN:
-            _LOGGER.error("SUPERVISOR_TOKEN not set — check homeassistant_api permission")
+        if not self._token:
+            _LOGGER.error("No auth token available — set ha_token option or check homeassistant_api permission")
         else:
-            _LOGGER.info("SUPERVISOR_TOKEN present (%d chars)", len(SUPERVISOR_TOKEN))
+            _LOGGER.info("Auth token present (%d chars)", len(self._token))
 
         self._session = aiohttp.ClientSession(
-            headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+            headers={"Authorization": f"Bearer {self._token}"}
         )
         self._running = True
 
@@ -56,7 +71,7 @@ class HAClient:
         import time
         try:
             async with self._session.get(
-                f"{HA_REST_BASE}/states",
+                f"{self._base}/states",
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status != 200:
@@ -86,16 +101,22 @@ class HAClient:
         chunk_size = 100
         chunks = [all_ids[i:i + chunk_size] for i in range(0, len(all_ids), chunk_size)]
 
+        _LOGGER.info(
+            "fetch_history: %d entities, %d chunks, start=%s",
+            len(all_ids), len(chunks), start,
+        )
         result: dict[str, list] = {}
-        for chunk in chunks:
+        for chunk_idx, chunk in enumerate(chunks):
             # Build URL with literal commas — urlencode would encode them as %2C,
             # causing HA to treat the entire list as one unknown entity ID.
             entity_ids_str = ",".join(chunk)
             url = yarl.URL(
-                f"{HA_REST_BASE}/history/period/{start}"
+                f"{self._base}/history/period/{start}"
                 f"?filter_entity_id={entity_ids_str}&significant_changes_only=1&no_attributes=1",
                 encoded=True,
             )
+            if chunk_idx == 0:
+                _LOGGER.info("History URL (chunk 0): %s", str(url)[:300])
             try:
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status != 200:
@@ -103,6 +124,12 @@ class HAClient:
                                         resp.status, await resp.text())
                         continue
                     data = await resp.json()
+                    if chunk_idx == 0:
+                        _LOGGER.info(
+                            "History chunk 0: got %d groups; first group sample: %s",
+                            len(data),
+                            (data[0][0] if data and data[0] else "EMPTY"),
+                        )
                     for entity_history in data:
                         if entity_history:
                             eid = entity_history[0].get("entity_id")
@@ -129,7 +156,7 @@ class HAClient:
         }
         try:
             async with self._session.post(
-                f"{HA_REST_BASE}/states/smart_suggestions.suggestions",
+                f"{self._base}/states/smart_suggestions.suggestions",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
@@ -144,7 +171,7 @@ class HAClient:
             return {"success": False, "error": "No active session"}
         try:
             async with self._session.post(
-                f"{HA_REST_BASE}/config/automation/config",
+                f"{self._base}/config/automation/config",
                 json={"config": config_dict},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
