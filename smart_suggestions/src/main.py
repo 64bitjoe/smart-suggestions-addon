@@ -1,4 +1,5 @@
-"""Smart Suggestions Add-on — main event loop."""
+# smart_suggestions/src/main.py
+"""Smart Suggestions Add-on — main event loop (redesigned)."""
 from __future__ import annotations
 
 import asyncio
@@ -6,11 +7,15 @@ import json
 import logging
 import os
 import signal
+from datetime import datetime, timezone
 
-from context_builder import build_context, build_prompt, _ACTION_DOMAINS
-from ha_client import HAClient, POLL_INTERVAL, REFRESH_INTERVAL as DEFAULT_REFRESH_INTERVAL
-from ollama_client import OllamaClient
-from pattern_analyzer import PatternAnalyzer
+from pattern_store import PatternStore
+from statistical_engine import StatisticalEngine
+from anthropic_analyzer import AnthropicAnalyzer
+from scene_engine import SceneEngine
+from ollama_narrator import OllamaNarrator
+from automation_builder import AutomationBuilder
+from ha_client import HAClient
 from ws_server import WSServer
 
 logging.basicConfig(
@@ -51,31 +56,7 @@ def _load_options() -> dict:
         return {}
 
 
-def _remove_noops(suggestions: list, states: dict) -> list:
-    """Remove suggestions whose action already matches the entity's current state."""
-    out = []
-    for s in suggestions:
-        eid = s.get("entity_id")
-        action = s.get("action", "")
-        current = states.get(eid, {}).get("state", "") if eid else ""
-        if action == "turn_off" and current == "off":
-            continue
-        if action == "turn_on" and current == "on":
-            continue
-        out.append(s)
-    return out
-
-
-_opts = _load_options()
-REFRESH_INTERVAL = int(_opts.get("refresh_interval", 10))
-MAX_SUGGESTIONS = int(_opts.get("max_suggestions", 7))
-HISTORY_HOURS = int(_opts.get("history_hours", 4))
-ANALYSIS_INTERVAL = 7200  # 2 hours
-
-
 class _WSLogHandler(logging.Handler):
-    """Forwards log records to the WebSocket UI log panel."""
-
     def __init__(self, ws_server: WSServer) -> None:
         super().__init__()
         self._ws = ws_server
@@ -85,217 +66,213 @@ class _WSLogHandler(logging.Handler):
             loop = asyncio.get_running_loop()
             loop.create_task(self._ws.broadcast_log(record.levelname, self.format(record)))
         except Exception:
-            pass  # Never raise from a log handler
+            pass
 
 
 class SmartSuggestionsAddon:
-    def __init__(self) -> None:
+    def __init__(self, opts: dict) -> None:
+        self._opts = opts
         self._ws_server = WSServer()
-        self._ollama = OllamaClient()
+        self._pattern_store = PatternStore()
+        self._stat_engine = StatisticalEngine(
+            self._pattern_store,
+            confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
+        )
+        self._scene_engine = SceneEngine(
+            max_suggestions=int(opts.get("max_suggestions", 7)),
+            confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
+        )
+        self._narrator = OllamaNarrator(
+            ollama_url=opts.get("ollama_url", "http://localhost:11434"),
+            model=opts.get("ollama_model", "llama3.2"),
+        )
+        self._analyzer = AnthropicAnalyzer(
+            ai_provider=opts.get("ai_provider", "anthropic"),
+            ai_api_key=opts.get("ai_api_key", ""),
+            ai_model=opts.get("ai_model", "claude-opus-4-5"),
+            analysis_depth_days=int(opts.get("analysis_depth_days", 14)),
+            ai_base_url=opts.get("ai_base_url", ""),
+        )
+        self._automation_builder = AutomationBuilder(
+            ai_provider=opts.get("ai_provider", "anthropic"),
+            ai_api_key=opts.get("ai_api_key", ""),
+            ai_model=opts.get("ai_model", "claude-opus-4-5"),
+            ai_base_url=opts.get("ai_base_url", ""),
+        )
         self._ha: HAClient | None = None
         self._refresh_lock = asyncio.Lock()
         self._last_suggestions: list = []
         self._last_states: dict = {}
         self._running = True
         self._feedback: dict = _load_feedback()
-        self._patterns: dict = PatternAnalyzer.load_patterns()
-        self._pattern_analyzer = PatternAnalyzer(self._ollama)
-        self._last_analysis: float = 0.0
         self._ha_connected: bool = False
         self._ollama_connected: bool = False
         self._last_refresh_str: str = "Never"
         self._last_analysis_str: str = "Never"
 
     def _push_system_status(self) -> None:
-        from ollama_client import OLLAMA_URL, OLLAMA_MODEL  # noqa: PLC0415
         status = {
             "ha_connected": self._ha_connected,
             "ollama_connected": self._ollama_connected,
-            "ollama_url": OLLAMA_URL,
-            "ollama_model": OLLAMA_MODEL,
+            "ollama_url": self._opts.get("ollama_url", ""),
+            "ollama_model": self._opts.get("ollama_model", ""),
             "entity_count": len(self._last_states),
             "last_refresh": self._last_refresh_str,
             "last_analysis": self._last_analysis_str,
-            "patterns_loaded": bool(self._patterns),
-            "pattern_routines": len(self._patterns.get("routines", [])) if self._patterns else 0,
-            "pattern_anomalies": len(self._patterns.get("anomalies", [])) if self._patterns else 0,
+            "patterns_loaded": bool(self._pattern_store.get_routines()),
+            "pattern_routines": len(self._pattern_store.get_routines()),
             "feedback_count": len(self._feedback),
         }
         self._ws_server.set_system_status(status)
 
     async def _on_states_ready(self, states: dict) -> None:
-        """Called by HAClient when state changes are debounced and ready."""
         self._last_states = states
         if not self._ha_connected:
             self._ha_connected = True
             self._push_system_status()
-        # Populate inject panel with ALL actionable entities (no dormancy filter)
-        all_entities = [
-            {
-                "entity_id": eid,
-                "name": s.get("attributes", {}).get("friendly_name", eid),
-                "domain": eid.split(".")[0],
-                "current_state": s.get("state"),
-            }
-            for eid, s in states.items()
-            if eid.split(".")[0] in _ACTION_DOMAINS
-            and s.get("state") not in ("unavailable", "unknown", "")
-        ]
-        all_entities.sort(key=lambda e: e["name"].lower())
-        self._ws_server.set_known_entities(all_entities)
         await self._run_refresh_cycle(states)
 
-    async def _trigger_analysis(self) -> None:
-        """Manually trigger a pattern analysis cycle."""
-        if not self._last_states:
-            _LOGGER.warning("Pattern analysis requested but no states loaded yet")
-            return
-        _LOGGER.info("Manual pattern analysis triggered")
-        asyncio.get_running_loop().create_task(self._run_analysis())
-
-    async def _run_analysis(self) -> None:
-        """Run a single pattern analysis cycle (shared by loop and manual trigger)."""
-        try:
-            history_48h = await self._ha.fetch_history(48)
-            patterns = await self._pattern_analyzer.analyze(history_48h, self._last_states)
-            if patterns:
-                self._patterns = patterns
-                PatternAnalyzer.save_patterns(patterns)
-                from datetime import datetime as _dt  # noqa: PLC0415
-                self._last_analysis_str = _dt.now().strftime("%H:%M:%S")
-                self._push_system_status()
-                _LOGGER.info(
-                    "Pattern analysis complete: %d routines, %d anomalies",
-                    len(patterns.get("routines", [])),
-                    len(patterns.get("anomalies", [])),
-                )
-            else:
-                _LOGGER.info("Pattern analysis returned no patterns")
-        except Exception as e:
-            _LOGGER.warning("Pattern analysis failed: %s", e)
-
-    async def _trigger_refresh(self) -> None:
-        """Trigger a refresh using the last known states (called from web UI or feedback)."""
-        if self._last_states:
-            asyncio.get_running_loop().create_task(
-                self._run_refresh_cycle(self._last_states)
-            )
-
     async def _run_refresh_cycle(self, states: dict) -> None:
-        """Build context, stream Ollama, broadcast tokens, write HA state."""
         if self._refresh_lock.locked():
-            return  # already refreshing
-
+            return
         async with self._refresh_lock:
             await self._ws_server.broadcast_status("updating")
             try:
-                history = await self._ha.fetch_history(HISTORY_HOURS)
-                # TODO: replaced in Task 11 (main.py rewrite)
-                ctx = build_context(states, history, self._feedback)
-                prompt = build_prompt(ctx, MAX_SUGGESTIONS, patterns=self._patterns or None)
+                # Score candidates deterministically
+                candidates = self._stat_engine.score_realtime(states)
+                # Rank scenes first, apply feedback
+                ranked = self._scene_engine.rank(candidates, states, self._feedback)
+                # Narrate reasons (non-blocking: if Ollama fails, falls back to raw reasons)
+                try:
+                    ranked = await asyncio.wait_for(
+                        self._narrator.narrate(ranked), timeout=15.0
+                    )
+                    self._ollama_connected = True
+                except (asyncio.TimeoutError, Exception) as e:
+                    self._ollama_connected = False
+                    _LOGGER.warning("Narration skipped: %s", e)
 
-                loop = asyncio.get_running_loop()
-
-                def on_token(token: str) -> None:
-                    loop.create_task(self._ws_server.broadcast_token(token))
-
-                raw = await self._ollama.stream_generate(prompt, on_token)
-                self._ollama_connected = bool(raw)
-                suggestions = self._ollama.parse_suggestions(raw, MAX_SUGGESTIONS)
-                suggestions = _remove_noops(suggestions, states)
-
-                # Post-LLM validation — drop hallucinated entity_ids and hard-downvoted
-                valid_eids = {a["entity_id"] for a in ctx["available_actions"]}
-                score_map = {a["entity_id"]: a.get("score", 50) for a in ctx["available_actions"]}
-                validated = []
-                for s in suggestions:
-                    eid = s.get("entity_id")
-                    if eid not in valid_eids:
-                        _LOGGER.warning("Dropping hallucinated entity_id: %s", eid)
-                        continue
-                    fb = self._feedback.get(eid, {})
-                    if isinstance(fb, dict) and fb.get("up", 0) - fb.get("down", 0) <= -3:
-                        _LOGGER.info("Excluding hard-downvoted entity: %s", eid)
-                        continue
-                    s["score"] = score_map.get(eid, 50)
-                    validated.append(s)
-                suggestions = validated
-
-                # Impression tracking
-                shown_eids = {s["entity_id"] for s in suggestions if s.get("entity_id")}
-                for eid in shown_eids:
-                    entry = self._feedback.setdefault(eid, {"up": 0, "down": 0, "shown": 0})
-                    entry["shown"] = min(entry.get("shown", 0) + 1, 8)
-                _save_feedback(self._feedback)
-
+                suggestions = ranked
                 if suggestions:
                     self._last_suggestions = suggestions
                 else:
-                    # Keep last known good suggestions on parse failure
                     suggestions = self._last_suggestions
 
                 await self._ws_server.broadcast_suggestions(suggestions)
                 await self._ha.write_suggestions_state(suggestions)
-                from datetime import datetime as _dt  # noqa: PLC0415
-                self._last_refresh_str = _dt.now().strftime("%H:%M:%S")
+                self._last_refresh_str = datetime.now().strftime("%H:%M:%S")
                 self._push_system_status()
-                _LOGGER.info("Refresh complete: %d suggestions (candidates scored, top-%d sent to Ollama)",
-                             len(suggestions), len(ctx["available_actions"]))
-
+                _LOGGER.info("Refresh complete: %d suggestions", len(suggestions))
             except Exception as e:
-                self._ollama_connected = False
                 _LOGGER.error("Refresh cycle error: %s", e)
-                self._push_system_status()
                 await self._ws_server.broadcast_status("error")
+                self._push_system_status()
+
+    async def _run_analysis(self) -> None:
+        if not self._last_states:
+            return
+        try:
+            history = await self._ha.fetch_history(self._opts.get("analysis_depth_days", 14) * 24)
+            patterns = await self._analyzer.analyze(history, self._last_states)
+            if any(patterns.values()):
+                self._pattern_store.merge(patterns)
+                self._last_analysis_str = datetime.now().strftime("%H:%M:%S")
+                self._push_system_status()
+                _LOGGER.info(
+                    "Analysis complete: %d routines, %d correlations, %d anomalies",
+                    len(patterns.get("routines", [])),
+                    len(patterns.get("correlations", [])),
+                    len(patterns.get("anomalies", [])),
+                )
+        except Exception as e:
+            _LOGGER.warning("Analysis failed: %s", e)
+
+    async def _correlation_loop(self) -> None:
+        interval = int(self._opts.get("analysis_interval_hours", 6)) * 3600
+        while self._running:
+            await asyncio.sleep(interval)
+            if self._last_states:
+                try:
+                    history = await self._ha.fetch_history(
+                        int(self._opts.get("analysis_depth_days", 14)) * 24
+                    )
+                    correlations = await self._stat_engine.analyze_correlations(
+                        history,
+                        self._last_states,
+                        window_minutes=int(self._opts.get("correlation_window_minutes", 5)),
+                    )
+                    if correlations:
+                        self._pattern_store.merge({"routines": [], "correlations": correlations, "anomalies": []})
+                        _LOGGER.info("Correlation scan: %d correlations stored", len(correlations))
+                except Exception as e:
+                    _LOGGER.warning("Correlation loop error: %s", e)
+
+    async def _nightly_analysis_scheduler(self) -> None:
+        # First-run: trigger immediately if store needs fresh analysis
+        if self._pattern_store.needs_fresh_analysis(int(self._opts.get("analysis_depth_days", 14))):
+            _LOGGER.info("First-run analysis triggered")
+            await self._run_analysis()
+        # Then schedule nightly
+        schedule_str = self._opts.get("analysis_schedule", "03:00")
+        while self._running:
+            try:
+                h, m = (int(x) for x in schedule_str.split(":"))
+            except ValueError:
+                h, m = 3, 0
+            now = datetime.now()
+            target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if target <= now:
+                from datetime import timedelta
+                target = target + timedelta(days=1)
+            sleep_seconds = (target - now).total_seconds()
+            _LOGGER.info("Nightly analysis scheduled in %.0f seconds (at %s)", sleep_seconds, schedule_str)
+            await asyncio.sleep(sleep_seconds)
+            await self._run_analysis()
+            from datetime import timedelta as _td
+            await asyncio.sleep(max(0, (target + _td(days=1) - datetime.now()).total_seconds()))
 
     async def _on_feedback(self, entity_id: str, vote: str) -> None:
-        entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0, "shown": 0})
+        entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0})
         entry[vote] = entry.get(vote, 0) + 1
-        entry["shown"] = 0  # reset impression penalty on explicit feedback
         _save_feedback(self._feedback)
         self._ws_server.set_feedback(self._feedback)
-        _LOGGER.info("Feedback recorded: %s %s (net %d)", entity_id, vote, entry["up"] - entry["down"])
-        # Immediately re-run so new suggestions reflect the vote
-        await self._trigger_refresh()
+        _LOGGER.info("Feedback: %s %s (net %d)", entity_id, vote, entry["up"] - entry["down"])
+        if self._last_states:
+            asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
-    async def _ollama_health_check(self) -> None:
-        """Ping Ollama on startup to set connectivity state immediately."""
-        from ollama_client import OLLAMA_URL  # noqa: PLC0415
-        import aiohttp  # noqa: PLC0415
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"{OLLAMA_URL}/api/tags", timeout=aiohttp.ClientTimeout(total=5)) as r:
-                    self._ollama_connected = r.status == 200
-        except Exception:
-            self._ollama_connected = False
-        _LOGGER.info("Ollama health check: %s", "reachable" if self._ollama_connected else "unreachable")
-        self._push_system_status()
+    async def _on_save_automation(self, suggestion: dict) -> None:
+        _LOGGER.info("Save as automation requested: %s", suggestion.get("entity_id"))
+        ctx = suggestion.get("automation_context") or {}
+        ctx["entity_id"] = suggestion.get("entity_id", "")
+        ctx["name"] = suggestion.get("name", "")
+        result = await self._automation_builder.build(ctx, self._ha)
+        await self._ws_server.broadcast_automation_result(result)
+
+    async def _on_trigger_analysis(self) -> None:
+        asyncio.get_running_loop().create_task(self._run_analysis())
+
+    async def _on_trigger_refresh(self) -> None:
+        if self._last_states:
+            asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
     async def run(self) -> None:
-        from ollama_client import OLLAMA_URL, OLLAMA_MODEL
-        _LOGGER.info(
-            "Smart Suggestions starting (refresh every %ds, max=%d, history=%dh, ollama=%s, model=%s)",
-            POLL_INTERVAL, MAX_SUGGESTIONS, HISTORY_HOURS, OLLAMA_URL, OLLAMA_MODEL,
-        )
-
+        _LOGGER.info("Smart Suggestions starting")
         self._ws_server.set_feedback(self._feedback)
         self._ws_server.register_feedback_handler(self._on_feedback)
-        self._ws_server.register_refresh_handler(self._trigger_refresh)
-        self._ws_server.register_analyze_handler(self._trigger_analysis)
+        self._ws_server.register_refresh_handler(self._on_trigger_refresh)
+        self._ws_server.register_analyze_handler(self._on_trigger_analysis)
+        self._ws_server.register_automation_handler(self._on_save_automation)
         self._push_system_status()
         await self._ws_server.start()
 
-        # Stream all log output to the web UI log panel
         log_handler = _WSLogHandler(self._ws_server)
         log_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
         log_handler.setLevel(logging.DEBUG)
         logging.getLogger().addHandler(log_handler)
-        await self._ollama.start()
-        asyncio.get_running_loop().create_task(self._ollama_health_check())
 
         self._ha = HAClient(
             on_states_ready=self._on_states_ready,
-            refresh_interval_seconds=REFRESH_INTERVAL * 60,
+            refresh_interval_seconds=int(self._opts.get("refresh_interval", 10)),
         )
 
         loop = asyncio.get_running_loop()
@@ -303,23 +280,18 @@ class SmartSuggestionsAddon:
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
         await self._ha.start()
-        asyncio.get_running_loop().create_task(self._analysis_loop())
-
-    async def _analysis_loop(self) -> None:
-        """Background task: run deep pattern analysis every 2 hours."""
-        while self._running:
-            await asyncio.sleep(ANALYSIS_INTERVAL)
-            if self._last_states:
-                await self._run_analysis()
+        loop.create_task(self._correlation_loop())
+        loop.create_task(self._nightly_analysis_scheduler())
 
     async def _shutdown(self) -> None:
         _LOGGER.info("Shutting down...")
         self._running = False
-        await self._ha.stop()
-        await self._ollama.stop()
+        if self._ha:
+            await self._ha.stop()
         await self._ws_server.stop()
 
 
 if __name__ == "__main__":
-    addon = SmartSuggestionsAddon()
+    opts = _load_options()
+    addon = SmartSuggestionsAddon(opts)
     asyncio.run(addon.run())
