@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "1.0.22"
+version: "2.0.0"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -22,12 +22,30 @@ options:
   refresh_interval: 10
   max_suggestions: 7
   history_hours: 4
+  analysis_depth_days: 14
+  analysis_schedule: "03:00"
+  analysis_interval_hours: 6
+  ai_provider: "anthropic"
+  ai_api_key: ""
+  ai_base_url: ""
+  ai_model: "claude-opus-4-5"
+  correlation_window_minutes: 5
+  pattern_confidence_threshold: 0.6
 schema:
   ollama_url: str
   ollama_model: str
   refresh_interval: int
   max_suggestions: int
   history_hours: int
+  analysis_depth_days: int
+  analysis_schedule: str
+  analysis_interval_hours: int
+  ai_provider: str
+  ai_api_key: password?
+  ai_base_url: str?
+  ai_model: str
+  correlation_window_minutes: int
+  pattern_confidence_threshold: float
 # image: ghcr.io/64bitjoe/smart-suggestions-addon/{arch}
 # Uncomment the image line above once GitHub Actions builds are set up.
 # Until then, Supervisor builds locally from the Dockerfile.
