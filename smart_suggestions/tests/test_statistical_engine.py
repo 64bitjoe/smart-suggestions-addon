@@ -173,3 +173,75 @@ async def test_analyze_correlations_detects_cooccurrence(tmp_path):
     assert len(correlations) >= 1
     entity_pairs = [(c["entity_a"], c["entity_b"]) for c in correlations]
     assert ("media_player.tv", "light.living_room") in entity_pairs
+
+
+def test_domain_filter_excludes_unlisted_domains():
+    """Entities not in allowed_domains must not appear in candidates."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.get_routines.return_value = []
+    store.get_correlations.return_value = []
+    store.get_active_anomalies.return_value = []
+
+    engine = StatisticalEngine(store, allowed_domains=["light"])
+    states = {
+        "light.kitchen": {"state": "on", "attributes": {"friendly_name": "Kitchen"}},
+        "switch.fan": {"state": "on", "attributes": {"friendly_name": "Fan"}},
+        "climate.bedroom": {"state": "cool", "attributes": {"friendly_name": "Bedroom"}},
+    }
+    result = engine.score_realtime(states)
+    domains = {c["entity_id"].split(".")[0] for c in result}
+    assert "switch" not in domains
+    assert "climate" not in domains
+
+
+def test_domain_filter_none_means_all_action_domains():
+    """allowed_domains=None keeps existing _ACTION_DOMAINS behaviour."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.get_routines.return_value = []
+    store.get_correlations.return_value = []
+    store.get_active_anomalies.return_value = []
+
+    engine = StatisticalEngine(store, allowed_domains=None)
+    states = {
+        "switch.fan": {"state": "on", "attributes": {"friendly_name": "Fan"}},
+    }
+    result = engine.score_realtime(states)
+    assert isinstance(result, list)
+
+
+def test_entity_sampling_respects_max_entities():
+    """When states exceed max_entities, only max_entities non-scene entities are scored."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.get_routines.return_value = []
+    store.get_correlations.return_value = []
+    anomalies = [{"entity_id": f"light.l{i}", "description": "anomaly"} for i in range(10)]
+    store.get_active_anomalies.return_value = anomalies
+
+    engine = StatisticalEngine(store, max_entities=3)
+    states = {f"light.l{i}": {"state": "on", "attributes": {"friendly_name": f"L{i}"}} for i in range(10)}
+    result = engine.score_realtime(states)
+    assert len(result) <= 3
+
+
+def test_scene_entities_not_affected_by_sampling():
+    """Scenes are always included, not subject to max_entities sampling."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.get_routines.return_value = []
+    store.get_correlations.return_value = []
+    store.get_active_anomalies.return_value = []
+
+    engine = StatisticalEngine(store, max_entities=1)
+    states = {
+        "scene.evening": {"state": "scening", "attributes": {"friendly_name": "Evening", "entities": {}}},
+        "scene.morning": {"state": "scening", "attributes": {"friendly_name": "Morning", "entities": {}}},
+        "light.l1": {"state": "on", "attributes": {"friendly_name": "L1"}},
+        "light.l2": {"state": "on", "attributes": {"friendly_name": "L2"}},
+    }
+    result = engine.score_realtime(states)
+    scene_ids = {c["entity_id"] for c in result if c["domain"] == "scene"}
+    assert "scene.evening" in scene_ids
+    assert "scene.morning" in scene_ids

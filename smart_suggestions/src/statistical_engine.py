@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import TYPE_CHECKING
@@ -64,9 +66,12 @@ def _routine_matches_now(routine: dict, now: datetime) -> tuple[bool, float]:
 
 
 class StatisticalEngine:
-    def __init__(self, pattern_store: "PatternStore", confidence_threshold: float = 0.6) -> None:
+    def __init__(self, pattern_store: "PatternStore", confidence_threshold: float = 0.6,
+                 allowed_domains: list[str] | None = None, max_entities: int = 150) -> None:
         self._store = pattern_store
         self._confidence_threshold = confidence_threshold
+        self._allowed_domains = set(allowed_domains) if allowed_domains else None
+        self._max_entities = max_entities
 
     def score_realtime(self, states: dict) -> list[dict]:
         """Score all actionable entities. Scenes first. Returns sorted candidate list."""
@@ -75,14 +80,30 @@ class StatisticalEngine:
         correlations = self._store.get_correlations()
         anomalies_by_eid = {a["entity_id"]: a for a in self._store.get_active_anomalies()}
 
+        # Separate scenes (always included) from other entities
+        scene_eids = [eid for eid in states if eid.split(".")[0] == "scene"]
+        other_eids = [
+            eid for eid in states
+            if eid.split(".")[0] != "scene"
+            and eid.split(".")[0] in _ACTION_DOMAINS
+            and (self._allowed_domains is None or eid.split(".")[0] in self._allowed_domains)
+        ]
+
+        # Hourly-seeded random sample of non-scene entities
+        if len(other_eids) > self._max_entities:
+            seed = int(time.time() // 3600)
+            rng = random.Random(seed)
+            other_eids = rng.sample(other_eids, self._max_entities)
+
+        eids_to_score = scene_eids + other_eids
+
         candidates = []
 
-        for eid, state in states.items():
+        for eid in eids_to_score:
+            state = states.get(eid, {})
             domain = eid.split(".")[0]
-            if domain not in _ACTION_DOMAINS:
-                continue
             s = state.get("state", "")
-            if s in ("unavailable", "unknown", ""):
+            if not s or s in ("unavailable", "unknown"):
                 continue
 
             score = 0.0
