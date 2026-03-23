@@ -182,6 +182,8 @@ class HAClient:
 
     async def _api_get(self, path: str) -> list:
         """Thin REST GET helper returning parsed JSON list."""
+        if not self._session:
+            raise RuntimeError("HAClient: no active session — call start() first")
         url = self._base.rstrip("/") + path
         async with self._session.get(url) as resp:
             resp.raise_for_status()
