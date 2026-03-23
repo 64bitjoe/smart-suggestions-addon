@@ -696,6 +696,9 @@ class WSServer:
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
         self._system_status: dict = {}
         self._patterns: dict = {}
+        self._usage_log = None
+        self._automation_builder = None
+        self._ha_client = None
 
     def register_feedback_handler(self, cb) -> None:
         self._feedback_cb = cb
@@ -708,6 +711,60 @@ class WSServer:
 
     def register_automation_handler(self, handler) -> None:
         self._automation_handler = handler
+
+    def set_usage_log(self, usage_log) -> None:
+        self._usage_log = usage_log
+
+    def set_automation_builder(self, builder) -> None:
+        self._automation_builder = builder
+
+    def set_ha_client(self, ha_client) -> None:
+        self._ha_client = ha_client
+
+    async def _handle_client_message(self, msg: dict, ws=None) -> None:
+        msg_type = msg.get("type")
+
+        if msg_type == "outcome":
+            if self._usage_log:
+                await self._usage_log.log(
+                    msg.get("entity_id", ""),
+                    msg.get("action", ""),
+                    msg.get("outcome", "shown"),
+                    float(msg.get("confidence", 0.0)),
+                )
+
+        elif msg_type == "build_yaml":
+            if ws and self._automation_builder:
+                entity_id = msg.get("entity_id", "")
+                action = msg.get("action", "")
+                try:
+                    ctx = {
+                        "entity_id": entity_id,
+                        "name": msg.get("name", entity_id),
+                        "typical_time": None,
+                        "days": [],
+                    }
+                    result = await self._automation_builder.build(
+                        ctx, self._ha_client
+                    )
+                    await ws.send_str(json.dumps({
+                        "type": "yaml_result",
+                        "entity_id": entity_id,
+                        "action": action,
+                        "yaml": result.get("yaml"),
+                    }))
+                except Exception as e:
+                    await ws.send_str(json.dumps({
+                        "type": "yaml_result",
+                        "entity_id": entity_id,
+                        "action": action,
+                        "yaml": None,
+                        "error": str(e),
+                    }))
+
+        elif msg_type == "save_automation":
+            suggestion = msg.get("suggestion", {})
+            asyncio.create_task(self._handle_save_automation(suggestion))
 
     async def broadcast_automation_result(self, result: dict) -> None:
         await self.broadcast({"type": "automation_result", **result})
@@ -851,10 +908,7 @@ class WSServer:
                 if msg.type == web.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
-                        msg_type = data.get("type", "")
-                        if msg_type == "save_automation":
-                            suggestion = data.get("suggestion", {})
-                            asyncio.create_task(self._handle_save_automation(suggestion))
+                        await self._handle_client_message(data, ws=ws)
                     except Exception as e:
                         _LOGGER.debug("WS message parse error: %s", e)
         except Exception:

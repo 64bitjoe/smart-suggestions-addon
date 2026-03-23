@@ -343,6 +343,8 @@ class SmartSuggestionsAddon:
         self._ws_server.register_refresh_handler(self._on_trigger_refresh)
         self._ws_server.register_analyze_handler(self._on_trigger_analysis)
         self._ws_server.register_automation_handler(self._on_save_automation)
+        self._ws_server.set_usage_log(self._usage_log)
+        self._ws_server.set_automation_builder(self._automation_builder)
         self._push_system_status()
         await self._ws_server.start()
         await self._usage_log.start()
@@ -359,6 +361,7 @@ class SmartSuggestionsAddon:
             ha_url=self._opts.get("ha_url", ""),
             ha_token=self._opts.get("ha_token", ""),
         )
+        self._ws_server.set_ha_client(self._ha)
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
