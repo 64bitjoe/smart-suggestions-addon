@@ -75,7 +75,7 @@ class SmartSuggestionsAddon:
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=_key,
             ai_model=opts.get("ai_model", "claude-opus-4-6"),
-            analysis_depth_days=int(opts.get("analysis_depth_days", 14)),
+            analysis_depth_days=int(opts.get("analysis_depth_days", 7)),
             ai_base_url=opts.get("ai_base_url", ""),
         )
         self._automation_builder = AutomationBuilder(
@@ -254,7 +254,7 @@ class SmartSuggestionsAddon:
         if not self._last_states or not self._ha:
             return
         try:
-            history = await self._ha.fetch_history(self._opts.get("analysis_depth_days", 14) * 24)
+            history = await self._ha.fetch_history(self._opts.get("analysis_depth_days", 7) * 24)
             patterns = await self._analyzer.analyze(history, self._last_states)
             if any(patterns.values()):
                 self._pattern_store.merge(patterns)
@@ -277,7 +277,7 @@ class SmartSuggestionsAddon:
             if self._last_states and self._ha:
                 try:
                     history = await self._ha.fetch_history(
-                        int(self._opts.get("analysis_depth_days", 14)) * 24
+                        int(self._opts.get("analysis_depth_days", 7)) * 24
                     )
                     correlations = await self._stat_engine.analyze_correlations(
                         history,
@@ -295,7 +295,7 @@ class SmartSuggestionsAddon:
         while self._running and not self._last_states:
             await asyncio.sleep(1)
         # First-run: trigger immediately if store needs fresh analysis
-        if self._pattern_store.needs_fresh_analysis(int(self._opts.get("analysis_depth_days", 14))):
+        if self._pattern_store.needs_fresh_analysis(int(self._opts.get("analysis_depth_days", 7))):
             _LOGGER.info("First-run analysis triggered")
             await self._run_analysis()
         # Then schedule nightly
