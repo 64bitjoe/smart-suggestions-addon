@@ -59,6 +59,34 @@ async def test_create_automation_no_session():
     assert result["success"] is False
 
 
+@pytest.mark.asyncio
+async def test_get_automations_returns_friendly_names():
+    from unittest.mock import AsyncMock, patch
+    from ha_client import HAClient
+
+    client = HAClient(
+        on_states_ready=AsyncMock(),
+        ha_url="http://homeassistant.local:8123",
+        ha_token="test_token",
+    )
+
+    mock_states = [
+        {"entity_id": "automation.goodnight", "state": "on",
+         "attributes": {"friendly_name": "Goodnight routine"}},
+        {"entity_id": "automation.motion_hall", "state": "off",
+         "attributes": {"friendly_name": "Hallway motion light"}},
+        {"entity_id": "light.kitchen", "state": "on",
+         "attributes": {"friendly_name": "Kitchen Light"}},
+    ]
+
+    with patch.object(client, "_api_get", new=AsyncMock(return_value=mock_states)):
+        result = await client.get_automations()
+
+    assert "Goodnight routine" in result
+    assert "Hallway motion light" in result
+    assert len(result) == 2
+
+
 def test_fetch_dow_history_not_present():
     """fetch_dow_history must be removed — ensure it no longer exists on HAClient."""
     from ha_client import HAClient

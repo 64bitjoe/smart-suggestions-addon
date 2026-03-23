@@ -180,6 +180,26 @@ class HAClient:
         except Exception as e:
             _LOGGER.warning("Error sending notification: %s", e)
 
+    async def _api_get(self, path: str) -> list:
+        """Thin REST GET helper returning parsed JSON list."""
+        url = self._base.rstrip("/") + path
+        async with self._session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def get_automations(self) -> list[str]:
+        """Return list of existing automation friendly names from HA states."""
+        try:
+            states = await self._api_get("/states")
+            return [
+                s.get("attributes", {}).get("friendly_name", s["entity_id"])
+                for s in states
+                if s.get("entity_id", "").startswith("automation.")
+            ]
+        except Exception as e:
+            _LOGGER.warning("get_automations failed: %s", e)
+            return []
+
     async def create_automation(self, config_dict: dict) -> dict:
         """Create a new HA automation via REST. Returns {success, automation_id} or {success, error}."""
         if not self._session:
