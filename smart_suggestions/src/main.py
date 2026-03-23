@@ -120,6 +120,87 @@ class SmartSuggestionsAddon:
         if any(patterns.values()):
             self._ws_server.set_patterns(patterns)
 
+    async def _build_narrator_context(self, states: dict) -> dict:
+        """Assemble rich context dict for the Ollama narrator."""
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.now(timezone.utc)
+        current_time = now.strftime("%H:%M on %A")
+
+        # Entities changed in last 60 minutes
+        recent_changes = []
+        cutoff = now - timedelta(minutes=60)
+        for eid, state in states.items():
+            lc = state.get("last_changed", "")
+            try:
+                changed = datetime.fromisoformat(lc.replace("Z", "+00:00"))
+                if changed >= cutoff:
+                    mins_ago = int((now - changed).total_seconds() / 60)
+                    recent_changes.append({
+                        "entity_id": eid,
+                        "state": state.get("state"),
+                        "changed_ago_minutes": mins_ago,
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # Motion / occupancy sensors
+        motion_sensors = []
+        for eid, state in states.items():
+            if eid.startswith("binary_sensor.") and any(
+                kw in eid for kw in ("motion", "occupancy", "presence")
+            ):
+                lc = state.get("last_changed", "")
+                mins_since = None
+                try:
+                    changed = datetime.fromisoformat(lc.replace("Z", "+00:00"))
+                    mins_since = int((now - changed).total_seconds() / 60)
+                except (ValueError, TypeError):
+                    pass
+                motion_sensors.append({
+                    "entity_id": eid,
+                    "state": state.get("state"),
+                    "minutes_since_triggered": mins_since,
+                })
+
+        # Presence
+        presence = [
+            eid for eid, s in states.items()
+            if eid.startswith("person.") and s.get("state") == "home"
+        ]
+
+        # Weather — check sensor first, then weather entity for condition
+        temp_val = None
+        condition_val = None
+        outdoor_temp = states.get("sensor.outdoor_temperature")
+        if outdoor_temp:
+            temp_val = outdoor_temp.get("state")
+        for eid, state in states.items():
+            if eid.startswith("weather."):
+                condition_val = state.get("state")
+                if temp_val is None:
+                    temp_val = state.get("attributes", {}).get("temperature")
+                break
+        weather = {"temperature": temp_val, "condition": condition_val} if (temp_val or condition_val) else None
+
+        # Avoided pairs from usage log
+        avoided = await self._usage_log.get_avoided_pairs(hours=24, limit=10)
+
+        # Existing automations
+        existing_automations: list[str] = []
+        if self._ha:
+            existing_automations = await self._ha.get_automations()
+
+        return {
+            "current_time": current_time,
+            "recent_changes": recent_changes[:10],
+            "motion_sensors": motion_sensors[:10],
+            "presence": presence,
+            "weather": weather,
+            "avoided_pairs": avoided,
+            "existing_automations": existing_automations[:30],
+        }
+
     async def _on_states_ready(self, states: dict) -> None:
         self._last_states = states
         if not self._ha_connected:
@@ -140,10 +221,12 @@ class SmartSuggestionsAddon:
                 entity_ids = [c["entity_id"] for c in candidates]
                 feedback_scores = await self._usage_log.get_feedback_scores(entity_ids)
                 ranked = self._scene_engine.rank(candidates, states, feedback_scores)
+                # Build rich context for narrator
+                context = await self._build_narrator_context(states)
                 # Narrate reasons (non-blocking: if Ollama fails, falls back to raw reasons)
                 try:
                     ranked = await asyncio.wait_for(
-                        self._narrator.narrate(ranked), timeout=15.0
+                        self._narrator.narrate(ranked, context=context), timeout=20.0
                     )
                     self._ollama_connected = True
                 except Exception as e:

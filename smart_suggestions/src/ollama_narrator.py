@@ -25,7 +25,7 @@ class OllamaNarrator:
             await self._session.close()
             self._session = None
 
-    async def narrate(self, candidates: list[dict]) -> list[dict]:
+    async def narrate(self, candidates: list[dict], **kwargs) -> list[dict]:
         """Rewrite 'reason' fields for all candidates. Returns candidates unchanged on any failure."""
         if not candidates:
             return []
