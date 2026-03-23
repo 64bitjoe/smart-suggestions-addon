@@ -58,6 +58,8 @@ class SmartSuggestionsAddon:
         self._stat_engine = StatisticalEngine(
             self._pattern_store,
             confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
+            allowed_domains=opts.get("domains") or None,
+            max_entities=int(opts.get("max_entities", 150)),
         )
         self._scene_engine = SceneEngine(
             max_suggestions=int(opts.get("max_suggestions", 7)),
