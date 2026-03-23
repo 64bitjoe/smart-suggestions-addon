@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import signal
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +15,7 @@ from scene_engine import SceneEngine
 from ollama_narrator import OllamaNarrator
 from automation_builder import AutomationBuilder
 from ha_client import HAClient
+from usage_log import UsageLog
 from ws_server import WSServer
 
 logging.basicConfig(
@@ -26,25 +26,6 @@ _LOGGER = logging.getLogger("smart_suggestions")
 
 _OPTIONS_FILE = "/data/options.json"
 _FEEDBACK_FILE = "/data/feedback.json"
-
-
-def _load_feedback() -> dict:
-    try:
-        with open(_FEEDBACK_FILE) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        _LOGGER.warning("Could not read feedback file: %s", e)
-        return {}
-
-
-def _save_feedback(fb: dict) -> None:
-    try:
-        with open(_FEEDBACK_FILE, "w") as f:
-            json.dump(fb, f)
-    except Exception as e:
-        _LOGGER.error("Could not save feedback: %s", e)
 
 
 def _load_options() -> dict:
@@ -101,12 +82,12 @@ class SmartSuggestionsAddon:
             ai_model=opts.get("ai_model", "claude-opus-4-6"),
             ai_base_url=opts.get("ai_base_url", ""),
         )
+        self._usage_log = UsageLog("/data/usage.db")
         self._ha: HAClient | None = None
         self._refresh_lock = asyncio.Lock()
         self._last_suggestions: list = []
         self._last_states: dict = {}
         self._running = True
-        self._feedback: dict = _load_feedback()
         self._ha_connected: bool = False
         self._ollama_connected: bool = False
         self._last_refresh_str: str = "Never"
@@ -123,7 +104,7 @@ class SmartSuggestionsAddon:
             "last_analysis": self._last_analysis_str,
             "patterns_loaded": bool(self._pattern_store.get_routines()),
             "pattern_routines": len(self._pattern_store.get_routines()),
-            "feedback_count": len(self._feedback),
+            "feedback_count": 0,
             "pattern_anomalies": len(self._pattern_store.get_active_anomalies()),
         }
         self._ws_server.set_system_status(status)
@@ -153,8 +134,10 @@ class SmartSuggestionsAddon:
             try:
                 # Score candidates deterministically
                 candidates = self._stat_engine.score_realtime(states)
-                # Rank scenes first, apply feedback
-                ranked = self._scene_engine.rank(candidates, states, self._feedback)
+                # Rank scenes first, apply feedback from UsageLog
+                entity_ids = [c["entity_id"] for c in candidates]
+                feedback_scores = await self._usage_log.get_feedback_scores(entity_ids)
+                ranked = self._scene_engine.rank(candidates, states, feedback_scores)
                 # Narrate reasons (non-blocking: if Ollama fails, falls back to raw reasons)
                 try:
                     ranked = await asyncio.wait_for(
@@ -248,11 +231,9 @@ class SmartSuggestionsAddon:
             # Loop back to top to recompute next occurrence
 
     async def _on_feedback(self, entity_id: str, vote: str) -> None:
-        entry = self._feedback.setdefault(entity_id, {"up": 0, "down": 0})
-        entry[vote] = entry.get(vote, 0) + 1
-        _save_feedback(self._feedback)
-        self._ws_server.set_feedback(self._feedback)
-        _LOGGER.info("Feedback: %s %s (net %d)", entity_id, vote, entry["up"] - entry["down"])
+        outcome = "run" if vote == "up" else "dismissed"
+        await self._usage_log.log(entity_id, "", outcome, 0.0)
+        _LOGGER.info("Feedback logged: %s %s", entity_id, outcome)
         if self._last_states:
             asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
@@ -273,13 +254,14 @@ class SmartSuggestionsAddon:
 
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions starting")
-        self._ws_server.set_feedback(self._feedback)
         self._ws_server.register_feedback_handler(self._on_feedback)
         self._ws_server.register_refresh_handler(self._on_trigger_refresh)
         self._ws_server.register_analyze_handler(self._on_trigger_analysis)
         self._ws_server.register_automation_handler(self._on_save_automation)
         self._push_system_status()
         await self._ws_server.start()
+        await self._usage_log.start()
+        await self._usage_log.migrate_from_json(_FEEDBACK_FILE)
 
         log_handler = _WSLogHandler(self._ws_server)
         log_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))

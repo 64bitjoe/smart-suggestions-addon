@@ -767,7 +767,7 @@ class WSServer:
     async def _ui_handler(self, request: web.Request) -> web.Response:
         html = (
             _UI_HTML
-            .replace("__FEEDBACK__", json.dumps(self._feedback))
+            .replace("__FEEDBACK__", json.dumps({}))
             .replace("__SUGGESTIONS__", json.dumps(self._last_suggestions))
         )
         return web.Response(text=html, content_type="text/html")
