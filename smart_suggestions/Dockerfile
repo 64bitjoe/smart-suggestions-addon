@@ -5,7 +5,7 @@ FROM $BUILD_FROM
 RUN apk add --no-cache python3 py3-pip py3-aiohttp py3-yaml
 
 # Install AI SDKs via pip (not in Alpine repos)
-RUN pip3 install --no-cache-dir --break-system-packages anthropic openai
+RUN pip3 install --no-cache-dir --break-system-packages anthropic openai aiosqlite
 
 # Copy source
 WORKDIR /app
