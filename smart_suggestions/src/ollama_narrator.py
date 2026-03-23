@@ -1,9 +1,8 @@
-"""Constrained Ollama wrapper — rewrites 'reason' fields only. No ranking."""
+"""Constrained Ollama wrapper — rewrites 'reason' fields and reranks candidates."""
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 
 import aiohttp
 
@@ -25,32 +24,64 @@ class OllamaNarrator:
             await self._session.close()
             self._session = None
 
-    async def narrate(self, candidates: list[dict], **kwargs) -> list[dict]:
+    async def narrate(self, candidates: list[dict], context: dict | None = None) -> list[dict]:
         """Rewrite 'reason' fields for all candidates. Returns candidates unchanged on any failure."""
         if not candidates:
             return []
         try:
-            raw = await self._call_ollama(candidates)
+            raw = await self._call_ollama(candidates, context=context)
             return self._apply_reasons(candidates, raw)
         except Exception as e:
             _LOGGER.warning("OllamaNarrator: failed, using original reasons: %s", e)
             return candidates
 
-    async def _call_ollama(self, candidates: list[dict]) -> str:
-        now_str = datetime.now().strftime("%H:%M on %A")
+    async def _call_ollama(self, candidates: list[dict], context: dict | None = None) -> str:
+        from datetime import datetime
+        now_str = context.get("current_time") if context else datetime.now().strftime("%H:%M on %A")
+
+        context_lines = []
+        if context:
+            if context.get("motion_sensors"):
+                no_motion = [s for s in context["motion_sensors"] if s.get("state") == "off"]
+                if no_motion:
+                    context_lines.append("No motion in: " + ", ".join(
+                        f"{s['entity_id']} ({s.get('minutes_since_triggered', '?')}m)"
+                        for s in no_motion[:5]
+                    ))
+            if context.get("presence"):
+                context_lines.append("Home: " + ", ".join(context["presence"]))
+            if context.get("weather"):
+                w = context["weather"]
+                context_lines.append(f"Weather: {w.get('condition', '')} {w.get('temperature', '')}°")
+            if context.get("existing_automations"):
+                context_lines.append("Already automated: " + "; ".join(context["existing_automations"][:10]))
+            if context.get("avoided_pairs"):
+                context_lines.append("User has dismissed: " + "; ".join(
+                    f"{p['entity_id']} {p['action']}" for p in context["avoided_pairs"][:5]
+                ))
+
+        context_block = "\n".join(context_lines) if context_lines else "No additional context."
+
         input_json = json.dumps([
             {"entity_id": c["entity_id"], "name": c["name"], "type": c.get("type"), "reason": c.get("reason", "")}
             for c in candidates
         ], indent=2)
-        prompt = f"""It is {now_str}. Rewrite the 'reason' field for each smart home suggestion to be natural and specific. Keep it to one sentence.
 
-SUGGESTIONS:
+        prompt = f"""It is {now_str}.
+
+CONTEXT:
+{context_block}
+
+SUGGESTIONS (reorder and rewrite reasons for relevance):
 {input_json}
 
-Return ONLY a valid JSON array (no markdown):
-[{{"entity_id": "...", "reason": "..."}}]
-
-One object per input item, in the same order. Do not add or remove items."""
+Instructions:
+1. Reorder the suggestions so the most contextually relevant items come first.
+2. Rewrite each 'reason' to be natural and specific (one sentence).
+3. Do NOT suggest anything already in "Already automated".
+4. Do NOT suggest anything in "User has dismissed".
+5. Return ONLY a valid JSON array (no markdown), same items as input, possibly reordered:
+[{{"entity_id": "...", "reason": "..."}}]"""
 
         session = self._session
         if session:
@@ -70,25 +101,33 @@ One object per input item, in the same order. Do not add or remove items."""
             return data.get("response", "")
 
     def _apply_reasons(self, candidates: list[dict], raw: str) -> list[dict]:
-        """Apply narrated reasons. Falls back to original for any missing/failed items."""
+        """Apply narrated reasons and reranking. Falls back to original on any failure."""
         try:
-            clean = raw.strip()
-            if clean.startswith("```"):
-                parts = clean.split("```")
-                clean = parts[1] if len(parts) > 1 else clean
-                if clean.startswith("json"):
-                    clean = clean[4:].strip()
-            narrated = json.loads(clean.strip())
-            if not isinstance(narrated, list):
+            parsed = json.loads(raw)
+            if not isinstance(parsed, list):
                 return candidates
-            narrated_by_eid = {item["entity_id"]: item["reason"] for item in narrated if "entity_id" in item and "reason" in item}
+
+            # Build lookup from original candidates
+            by_eid = {c["entity_id"]: c for c in candidates}
+            seen = set()
             result = []
+
+            # Follow LLM's order
+            for item in parsed:
+                eid = item.get("entity_id")
+                if not eid or eid not in by_eid or eid in seen:
+                    continue
+                candidate = dict(by_eid[eid])
+                if item.get("reason"):
+                    candidate["reason"] = item["reason"]
+                result.append(candidate)
+                seen.add(eid)
+
+            # Append any candidates the LLM dropped
             for c in candidates:
-                updated = dict(c)
-                if c["entity_id"] in narrated_by_eid:
-                    updated["reason"] = narrated_by_eid[c["entity_id"]]
-                result.append(updated)
-            return result
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            _LOGGER.warning("OllamaNarrator: could not parse response: %s", e)
+                if c["entity_id"] not in seen:
+                    result.append(c)
+
+            return result if result else candidates
+        except (json.JSONDecodeError, TypeError):
             return candidates
