@@ -95,8 +95,11 @@ class HAClient:
         if not self._session or not self._states:
             return {}
 
+        from const import _ACTION_DOMAINS, _CONTEXT_ONLY_DOMAINS
         start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        all_ids = list(self._states.keys())
+        # Only fetch history for actionable + context domains (not all 3000+ entities)
+        relevant_domains = _ACTION_DOMAINS | _CONTEXT_ONLY_DOMAINS
+        all_ids = [eid for eid in self._states if eid.split(".")[0] in relevant_domains]
         # Batch into chunks of 100 to stay well under URL length limits
         chunk_size = 100
         chunks = [all_ids[i:i + chunk_size] for i in range(0, len(all_ids), chunk_size)]

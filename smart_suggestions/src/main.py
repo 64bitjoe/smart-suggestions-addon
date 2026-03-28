@@ -12,7 +12,7 @@ from pattern_store import PatternStore
 from statistical_engine import StatisticalEngine
 from anthropic_analyzer import AnthropicAnalyzer
 from scene_engine import SceneEngine
-from ollama_narrator import OllamaNarrator
+from narrator import OllamaNarrator, AINarrator
 from automation_builder import AutomationBuilder
 from ha_client import HAClient
 from usage_log import UsageLog
@@ -65,11 +65,22 @@ class SmartSuggestionsAddon:
             max_suggestions=int(opts.get("max_suggestions", 7)),
             confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
         )
-        self._narrator = OllamaNarrator(
-            ollama_url=opts.get("ollama_url", "http://localhost:11434"),
-            model=opts.get("ollama_model", "llama3.2"),
-        )
         _key = opts.get("ai_api_key", "")
+        narrator_provider = opts.get("narrator_provider", "ai" if _key else "ollama")
+        if narrator_provider == "ai" and _key:
+            self._narrator = AINarrator(
+                ai_provider=opts.get("ai_provider", "anthropic"),
+                ai_api_key=_key,
+                ai_model=opts.get("ai_model", "claude-opus-4-6"),
+                ai_base_url=opts.get("ai_base_url", ""),
+            )
+            _LOGGER.info("Narrator: using %s/%s", opts.get("ai_provider", "anthropic"), opts.get("ai_model", "claude-opus-4-6"))
+        else:
+            self._narrator = OllamaNarrator(
+                ollama_url=opts.get("ollama_url", "http://localhost:11434"),
+                model=opts.get("ollama_model", "qwen3:8b"),
+            )
+            _LOGGER.info("Narrator: using Ollama at %s", opts.get("ollama_url", "http://localhost:11434"))
         _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
         self._analyzer = AnthropicAnalyzer(
             ai_provider=opts.get("ai_provider", "anthropic"),

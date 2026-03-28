@@ -21,7 +21,7 @@ async def test_narrate_rewrites_reasons():
 
     new_reasons = [{"entity_id": "scene.evening", "reason": "Your living room is ready for Evening Scene."}]
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(return_value=json.dumps(new_reasons))):
+    with patch.object(narrator, "_post", new=AsyncMock(return_value=json.dumps(new_reasons))):
         result = await narrator.narrate(candidates)
 
     assert result[0]["entity_id"] == "scene.evening"
@@ -33,7 +33,7 @@ async def test_narrate_falls_back_on_ollama_failure():
     narrator = OllamaNarrator(ollama_url="http://localhost:11434", model="llama3.2")
     candidates = [make_candidate("scene.evening", "original reason")]
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(side_effect=Exception("connection refused"))):
+    with patch.object(narrator, "_post", new=AsyncMock(side_effect=Exception("connection refused"))):
         result = await narrator.narrate(candidates)
 
     assert result[0]["reason"] == "original reason"
@@ -44,7 +44,7 @@ async def test_narrate_falls_back_on_bad_json():
     narrator = OllamaNarrator(ollama_url="http://localhost:11434", model="llama3.2")
     candidates = [make_candidate("scene.evening", "original reason")]
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(return_value="not valid json")):
+    with patch.object(narrator, "_post", new=AsyncMock(return_value="not valid json")):
         result = await narrator.narrate(candidates)
 
     assert result[0]["reason"] == "original reason"
@@ -60,7 +60,7 @@ async def test_narrate_preserves_candidate_count_appends_missing():
     ]
     partial = json.dumps([{"entity_id": "scene.evening", "reason": "Better reason"}])
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(return_value=partial)):
+    with patch.object(narrator, "_post", new=AsyncMock(return_value=partial)):
         result = await narrator.narrate(candidates)
 
     assert len(result) == 2
@@ -88,7 +88,7 @@ async def test_narrate_accepts_context_kwarg():
     context = {"current_time": "22:00 on Wednesday", "motion_sensors": [], "presence": ["person.john"],
                "weather": None, "avoided_pairs": [], "existing_automations": [], "recent_changes": []}
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(return_value=json.dumps(new_reasons))):
+    with patch.object(narrator, "_post", new=AsyncMock(return_value=json.dumps(new_reasons))):
         result = await narrator.narrate(candidates, context=context)
 
     assert result[0]["reason"] == "It has been on for an hour with no motion."
@@ -107,7 +107,7 @@ async def test_narrate_reranks_on_reordered_response():
         {"entity_id": "scene.evening", "reason": "Evening reordered reason"},
     ])
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(return_value=reordered)):
+    with patch.object(narrator, "_post", new=AsyncMock(return_value=reordered)):
         result = await narrator.narrate(candidates)
 
     assert result[0]["entity_id"] == "light.kitchen"
@@ -128,7 +128,7 @@ async def test_narrate_appends_missing_items_at_end_on_partial_rerank():
         {"entity_id": "scene.evening", "reason": "Evening reason"},
     ])
 
-    with patch.object(narrator, "_call_ollama", new=AsyncMock(return_value=partial)):
+    with patch.object(narrator, "_post", new=AsyncMock(return_value=partial)):
         result = await narrator.narrate(candidates)
 
     assert len(result) == 3
