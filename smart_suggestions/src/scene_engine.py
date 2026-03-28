@@ -1,4 +1,4 @@
-"""Scene-first suggestion ranking. Applies feedback, noop filter, confidence labels."""
+"""Suggestion ranking. Applies feedback, noop filter, confidence labels, and diversity."""
 from __future__ import annotations
 
 import logging
@@ -39,7 +39,7 @@ class SceneEngine:
         self._confidence_threshold = confidence_threshold
 
     def rank(self, candidates: list[dict], states: dict, feedback: dict) -> list[dict]:
-        """Apply feedback + noop filter, sort scenes first, return top N."""
+        """Apply feedback + noop filter, sort by score, enforce diversity, return top N."""
         # Apply feedback signals
         scored = []
         for c in candidates:
@@ -57,9 +57,19 @@ class SceneEngine:
             updated["confidence"] = _confidence_label(updated["score"], c.get("routine_match", False))
             # Assign action if not already set
             if "action" not in updated:
-                if updated.get("domain") == "scene":
+                domain = updated.get("domain", "")
+                current_state = states.get(eid, {}).get("state", "")
+                if domain == "scene":
                     updated["action"] = "activate"
-                elif states.get(eid, {}).get("state", "") == "on":
+                elif domain == "automation":
+                    updated["action"] = "trigger"
+                elif domain == "script":
+                    updated["action"] = "turn_on"
+                elif domain == "lock":
+                    updated["action"] = "lock" if current_state == "unlocked" else "unlock"
+                elif domain == "cover":
+                    updated["action"] = "close_cover" if current_state == "open" else "open_cover"
+                elif current_state == "on":
                     updated["action"] = "turn_off"
                 else:
                     updated["action"] = "turn_on"
@@ -68,7 +78,16 @@ class SceneEngine:
         # Remove noops
         scored = _remove_noops(scored, states)
 
-        # Sort: scenes first (by score), then others (by score)
-        scored.sort(key=lambda c: (c.get("type") != "scene", -c.get("score", 0)))
+        # Sort by score descending
+        scored.sort(key=lambda c: -c.get("score", 0))
 
-        return scored[:self._max]
+        # Enforce diversity: max 3 suggestions from any single domain
+        diverse = []
+        domain_counts: dict[str, int] = {}
+        for c in scored:
+            d = c.get("domain", "")
+            if domain_counts.get(d, 0) >= 3:
+                continue
+            diverse.append(c)
+            domain_counts[d] = domain_counts.get(d, 0) + 1
+        return diverse[:self._max]

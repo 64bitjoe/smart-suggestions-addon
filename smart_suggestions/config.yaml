@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "2.1.0"
+version: "2.2.0"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -20,19 +20,19 @@ options:
   ha_url: "http://homeassistant.local:8123"
   ha_token: ""
   ollama_url: "http://homeassistant.local:11434"
-  ollama_model: "llama3:latest"
+  ollama_model: "qwen3:8b"
   refresh_interval: 10
   max_suggestions: 7
   max_entities: 150
   history_hours: 4
   analysis_depth_days: 7
   analysis_schedule: "03:00"
-  analysis_interval_hours: 6
+  analysis_interval_hours: 2
   ai_provider: "anthropic"
   ai_api_key: ""
   ai_base_url: ""
   ai_model: "claude-opus-4-6"
-  correlation_window_minutes: 5
+  correlation_window_minutes: 15
   pattern_confidence_threshold: 0.6
   domains:
     - light
@@ -42,6 +42,10 @@ options:
     - media_player
     - cover
     - fan
+    - vacuum
+    - automation
+    - script
+    - input_boolean
 schema:
   ha_url: str
   ha_token: password?

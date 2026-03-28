@@ -337,11 +337,41 @@ class SmartSuggestionsAddon:
         if self._last_states:
             asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
+    async def _on_trigger_refresh_all(self) -> None:
+        """Full pipeline: re-fetch states, run analysis + correlations, then refresh suggestions."""
+        _LOGGER.info("Refresh All triggered")
+        if not self._ha:
+            return
+        try:
+            # 1. Fetch fresh states
+            await self._ha._fetch_states()
+            states = self._last_states
+            if not states:
+                return
+            # 2. Run pattern analysis
+            await self._run_analysis()
+            # 3. Run correlation scan
+            history = await self._ha.fetch_history(
+                int(self._opts.get("analysis_depth_days", 7)) * 24
+            )
+            correlations = await self._stat_engine.analyze_correlations(
+                history, states,
+                window_minutes=int(self._opts.get("correlation_window_minutes", 15)),
+            )
+            if correlations:
+                self._pattern_store.merge({"routines": [], "correlations": correlations, "anomalies": []})
+            # 4. Refresh suggestions with new patterns
+            await self._run_refresh_cycle(states)
+            _LOGGER.info("Refresh All complete")
+        except Exception as e:
+            _LOGGER.error("Refresh All error: %s", e)
+
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions starting")
         self._ws_server.register_feedback_handler(self._on_feedback)
         self._ws_server.register_refresh_handler(self._on_trigger_refresh)
         self._ws_server.register_analyze_handler(self._on_trigger_analysis)
+        self._ws_server.register_refresh_all_handler(self._on_trigger_refresh_all)
         self._ws_server.register_automation_handler(self._on_save_automation)
         self._ws_server.set_usage_log(self._usage_log)
         self._ws_server.set_automation_builder(self._automation_builder)

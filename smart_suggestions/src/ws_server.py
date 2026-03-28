@@ -683,6 +683,7 @@ class WSServer:
         self._app.router.add_get("/logs", self._logs_handler)
         self._app.router.add_get("/status", self._status_handler)
         self._app.router.add_post("/analyze", self._analyze_handler)
+        self._app.router.add_post("/refresh_all", self._refresh_all_handler)
         self._app.router.add_post("/save_automation", self._handle_post_save_automation)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
@@ -692,6 +693,7 @@ class WSServer:
         self._feedback_cb = None
         self._refresh_cb = None
         self._analyze_cb = None
+        self._refresh_all_cb = None
         self._automation_handler = None
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
         self._system_status: dict = {}
@@ -708,6 +710,9 @@ class WSServer:
 
     def register_analyze_handler(self, cb) -> None:
         self._analyze_cb = cb
+
+    def register_refresh_all_handler(self, cb) -> None:
+        self._refresh_all_cb = cb
 
     def register_automation_handler(self, handler) -> None:
         self._automation_handler = handler
@@ -761,6 +766,13 @@ class WSServer:
                         "yaml": None,
                         "error": str(e),
                     }))
+
+        elif msg_type == "refresh_all":
+            # Full pipeline: analysis + correlation + refresh
+            if self._refresh_all_cb:
+                asyncio.create_task(self._refresh_all_cb())
+            elif self._refresh_cb:
+                await self._refresh_cb()
 
         elif msg_type == "save_automation":
             suggestion = msg.get("suggestion", {})
@@ -858,6 +870,13 @@ class WSServer:
     async def _analyze_handler(self, request: web.Request) -> web.Response:
         if self._analyze_cb:
             asyncio.get_running_loop().create_task(self._analyze_cb())
+        return web.json_response({"ok": True})
+
+    async def _refresh_all_handler(self, request: web.Request) -> web.Response:
+        if self._refresh_all_cb:
+            asyncio.get_running_loop().create_task(self._refresh_all_cb())
+        elif self._refresh_cb:
+            await self._refresh_cb()
         return web.json_response({"ok": True})
 
     async def _inject_handler(self, request: web.Request) -> web.Response:

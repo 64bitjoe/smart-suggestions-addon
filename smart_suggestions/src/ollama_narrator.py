@@ -1,4 +1,4 @@
-"""Constrained Ollama wrapper — rewrites 'reason' fields and reranks candidates."""
+"""Ollama wrapper — contextually reranks candidates and rewrites reason fields."""
 from __future__ import annotations
 
 import json
@@ -67,20 +67,32 @@ class OllamaNarrator:
             for c in candidates
         ], indent=2)
 
-        prompt = f"""It is {now_str}.
+        # Build compact entity state context grouped by area
+        entity_context_lines = []
+        if context and context.get("recent_changes"):
+            entity_context_lines.append("RECENTLY CHANGED:")
+            for rc in context["recent_changes"][:15]:
+                entity_context_lines.append(f"  {rc['entity_id']}: {rc.get('state', '?')} ({rc.get('changed_ago_minutes', '?')}m ago)")
 
-CONTEXT:
+        entity_context = "\n".join(entity_context_lines) if entity_context_lines else ""
+
+        prompt = f"""You are a smart home assistant. Given the current context, rank these suggestions by how useful they are RIGHT NOW.
+
+TIME: {now_str}
+
 {context_block}
 
-SUGGESTIONS (reorder and rewrite reasons for relevance):
+{entity_context}
+
+CANDIDATE SUGGESTIONS (reorder by relevance, rewrite reasons to be specific and helpful):
 {input_json}
 
 Instructions:
-1. Reorder the suggestions so the most contextually relevant items come first.
-2. Rewrite each 'reason' to be natural and specific (one sentence).
-3. Do NOT suggest anything already in "Already automated".
-4. Do NOT suggest anything in "User has dismissed".
-5. Return ONLY a valid JSON array (no markdown), same items as input, possibly reordered:
+1. Put the most useful-right-now suggestions first. Consider time of day, what's currently on/off, weather, and occupancy.
+2. Rewrite each 'reason' to be conversational and specific — explain WHY this action makes sense right now (one sentence).
+3. Prioritize diversity: mix different entity types (lights, climate, locks, media, scenes) rather than clustering one type.
+4. Do NOT suggest anything in "Already automated" or "User has dismissed".
+5. Return ONLY a valid JSON array (no markdown):
 [{{"entity_id": "...", "reason": "..."}}]"""
 
         session = self._session

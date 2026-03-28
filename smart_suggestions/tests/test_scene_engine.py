@@ -19,14 +19,16 @@ def make_candidate(entity_id: str, score: float, type_: str = "entity", routine_
     }
 
 
-def test_scenes_ranked_before_entities():
+def test_higher_score_ranked_first():
     engine = SceneEngine(max_suggestions=5)
     candidates = [
         make_candidate("light.kitchen", score=80),
         make_candidate("scene.evening", score=50, type_="scene"),
     ]
     result = engine.rank(candidates, states={}, feedback={})
-    assert result[0]["entity_id"] == "scene.evening"
+    # Higher score wins regardless of entity type
+    assert result[0]["entity_id"] == "light.kitchen"
+    assert result[1]["entity_id"] == "scene.evening"
 
 
 def test_max_suggestions_respected():

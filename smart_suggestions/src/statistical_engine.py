@@ -74,7 +74,7 @@ class StatisticalEngine:
         self._max_entities = max_entities
 
     def score_realtime(self, states: dict) -> list[dict]:
-        """Score all actionable entities. Scenes first. Returns sorted candidate list."""
+        """Score all actionable entities with context-aware signals. Returns sorted candidate list."""
         now = datetime.now(timezone.utc)
         routines_by_eid = {r["entity_id"]: r for r in self._store.get_routines()}
         correlations = self._store.get_correlations()
@@ -111,11 +111,54 @@ class StatisticalEngine:
             match_ratio = 0.0
             reason_parts = []
 
+            # --- Context-aware base scoring (all domains) ---
+            # Time-of-day relevance
+            hour = now.hour
+            if domain in ("light", "switch", "fan") and (hour >= 17 or hour < 6):
+                score += 8
+                reason_parts.append("evening/night — good time to adjust lighting")
+            elif domain == "climate" and (hour >= 22 or hour < 7):
+                score += 6
+                reason_parts.append("overnight — consider adjusting climate")
+            elif domain == "media_player" and 17 <= hour <= 23:
+                score += 5
+                reason_parts.append("evening — prime media time")
+
+            # Recently changed boost (entity changed in last 60 min)
+            last_changed_str = state.get("last_changed", "")
+            if last_changed_str:
+                try:
+                    last_changed = datetime.fromisoformat(last_changed_str.replace("Z", "+00:00"))
+                    minutes_ago = (now - last_changed).total_seconds() / 60
+                    if 0 < minutes_ago <= 60:
+                        recency_boost = max(0, 15 * (1 - minutes_ago / 60))
+                        score += round(recency_boost, 1)
+                        reason_parts.append(f"changed {int(minutes_ago)}m ago")
+                except (ValueError, TypeError):
+                    pass
+
+            # Stale active anomaly (entity active for unusually long)
+            if s not in _INACTIVE_STATES and last_changed_str:
+                try:
+                    last_changed = datetime.fromisoformat(last_changed_str.replace("Z", "+00:00"))
+                    hours_active = (now - last_changed).total_seconds() / 3600
+                    if domain in ("light", "switch", "fan") and hours_active >= 8:
+                        score += 12
+                        reason_parts.append(f"on for {int(hours_active)}h — may have been forgotten")
+                    elif domain == "lock" and s == "unlocked" and hours_active >= 4:
+                        score += 15
+                        reason_parts.append(f"unlocked for {int(hours_active)}h")
+                    elif domain == "cover" and s == "open" and hours_active >= 6:
+                        score += 10
+                        reason_parts.append(f"open for {int(hours_active)}h")
+                except (ValueError, TypeError):
+                    pass
+
             # Scene-specific scoring
             if domain == "scene":
                 match_ratio = score_scene_match(eid, states)
                 if match_ratio >= _SCENE_MATCH_THRESHOLD:
-                    score += match_ratio * 30
+                    score += match_ratio * 15
                     reason_parts.append(f"{int(match_ratio * 100)}% of members already in target state")
 
             # Routine match boost
@@ -141,7 +184,7 @@ class StatisticalEngine:
                         reason_parts.append(corr.get("pattern", "correlated with active device"))
 
             # Only include entities with some signal
-            if score > 0 or domain == "scene":
+            if score > 0:
                 name = state.get("attributes", {}).get("friendly_name", eid)
                 candidates.append({
                     "entity_id": eid,
@@ -157,8 +200,7 @@ class StatisticalEngine:
                     "routine_match": routine_match,
                     "reason": "; ".join(reason_parts) if reason_parts else "",
                     "can_save_as_automation": (
-                        domain == "scene"
-                        and routine_match
+                        routine_match
                         and eid in routines_by_eid
                         and routines_by_eid[eid].get("confidence", 0) >= self._confidence_threshold
                     ),
@@ -167,12 +209,12 @@ class StatisticalEngine:
                             "typical_time": routines_by_eid[eid].get("typical_time"),
                             "days": routines_by_eid[eid].get("days", []),
                         }
-                        if domain == "scene" and eid in routines_by_eid else None
+                        if routine_match and eid in routines_by_eid else None
                     ),
                 })
 
-        # Sort: scenes first (by score), then others
-        candidates.sort(key=lambda c: (c["type"] != "scene", -c["score"]))
+        # Sort by score descending (all entity types compete equally)
+        candidates.sort(key=lambda c: -c["score"])
         return candidates
 
     async def analyze_correlations(self, history: dict, states: dict, window_minutes: int = 5) -> list[dict]:
@@ -216,11 +258,12 @@ class StatisticalEngine:
 
         correlations = []
         for (eid_a, eid_b), count in co_counts.items():
-            if count < 3:  # minimum 3 occurrences
+            if count < 2:  # minimum 2 occurrences
                 continue
             total_a = total_counts.get(eid_a, 1)
             confidence = round(min(count / total_a, 1.0), 2)
-            if confidence < 0.4:
+            min_confidence = 0.5 if count == 2 else 0.4
+            if confidence < min_confidence:
                 continue
             name_a = states.get(eid_a, {}).get("attributes", {}).get("friendly_name", eid_a)
             name_b = states.get(eid_b, {}).get("attributes", {}).get("friendly_name", eid_b)

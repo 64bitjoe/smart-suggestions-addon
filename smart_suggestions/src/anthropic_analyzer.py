@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from const import _ACTION_DOMAINS
+from const import _ACTION_DOMAINS, _INACTIVE_STATES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def _summarise_history(entries: list) -> str:
 
 
 def _compact_history(history: dict, states: dict) -> dict:
-    """Return compact summary — only actionable entities with state changes."""
+    """Return compact summary — actionable entities with state changes or long-duration anomalies."""
     out = {}
     for eid, entries in history.items():
         domain = eid.split(".")[0]
@@ -39,28 +39,75 @@ def _compact_history(history: dict, states: dict) -> dict:
             continue
         if not entries:
             continue
+        name = states.get(eid, {}).get("attributes", {}).get("friendly_name", eid)
         # Scenes/scripts/automations are always "scening"/"idle" — treat any entries as changes
         if domain not in {"scene", "script", "automation"}:
             states_seen = {e.get("state") for e in entries}
             if len(states_seen) < 2:
+                # Check for long-duration anomaly: entity stuck in active state
+                current_state = states.get(eid, {}).get("state", "")
+                if current_state in _INACTIVE_STATES or current_state in ("unavailable", "unknown", ""):
+                    continue
+                # Calculate how long entity has been in current state
+                last_changed_str = states.get(eid, {}).get("last_changed", "")
+                if not last_changed_str:
+                    continue
+                try:
+                    from datetime import datetime, timezone
+                    last_changed = datetime.fromisoformat(last_changed_str.replace("Z", "+00:00"))
+                    hours_active = (datetime.now(timezone.utc) - last_changed).total_seconds() / 3600
+                except (ValueError, TypeError):
+                    continue
+                # Include if active for unusually long
+                threshold = 6 if domain in ("light", "switch", "fan") else 4 if domain == "lock" else 8
+                if hours_active < threshold:
+                    continue
+                out[eid] = {"name": name, "history": f"{current_state} continuously for {int(hours_active)}h [ANOMALY: unusually long duration]"}
                 continue
         summary = _summarise_history(entries)
         if summary:
-            name = states.get(eid, {}).get("attributes", {}).get("friendly_name", eid)
             out[eid] = {"name": name, "history": summary}
     return out
 
 
-def _build_prompt(compact: dict, now: datetime) -> str:
-    history_json = json.dumps(compact, indent=2)
+def _build_prompt(compact: dict, states: dict, now: datetime) -> str:
+    # Group entities by area
+    by_area: dict[str, list[str]] = {}
+    for eid, info in compact.items():
+        area = states.get(eid, {}).get("attributes", {}).get("area_id", "")
+        if not area:
+            # Try to infer area from friendly name
+            name = info.get("name", "")
+            area = name.split(" ")[0] if " " in name else "Other"
+        by_area.setdefault(area, []).append(f"- {eid} ({info['name']}): {info['history']}")
+
+    history_text = ""
+    for area, lines in sorted(by_area.items()):
+        history_text += f"\n## {area}\n" + "\n".join(lines) + "\n"
+
+    # Current state snapshot
+    state_lines = []
+    for eid, s in states.items():
+        domain = eid.split(".")[0]
+        if domain not in _ACTION_DOMAINS:
+            continue
+        name = s.get("attributes", {}).get("friendly_name", eid)
+        state_val = s.get("state", "?")
+        if state_val not in ("unavailable", "unknown"):
+            state_lines.append(f"  {eid}: {state_val}")
+    state_snapshot = "\n".join(state_lines[:150])
+
     day_of_week = now.strftime("%A")
     current_time = now.strftime("%H:%M")
     return f"""Analyze this smart home entity history and extract behavioral patterns.
 
 CURRENT TIME: {current_time} on {day_of_week}
 
-ENTITY HISTORY (state transitions):
-{history_json}
+ENTITY HISTORY (state transitions, grouped by area):
+{history_text}
+
+CURRENT STATE SNAPSHOT:
+{state_snapshot}
 
 Return ONLY a valid JSON object (no markdown, no explanation):
 
@@ -81,7 +128,7 @@ Return ONLY a valid JSON object (no markdown, no explanation):
       "entity_b": "exact_entity_id",
       "pattern": "one sentence description",
       "confidence": 0.0,
-      "window_minutes": 5,
+      "window_minutes": 15,
       "instances": 3
     }}
   ],
@@ -95,10 +142,14 @@ Return ONLY a valid JSON object (no markdown, no explanation):
 }}
 
 Rules:
-- Only patterns with 3+ occurrences
+- Look for patterns across ALL entity domains (lights, switches, climate, locks, media, covers, fans, automations, scripts, scenes)
+- Include time-based routines for ANY entity type, not just scenes
+- Flag "energy waste" anomalies: devices left on when area appears unoccupied
+- Flag "forgotten device" anomalies: entities active much longer than their historical average
+- Patterns with 2+ occurrences at high confidence (0.7+) or 3+ at medium confidence (0.5+)
 - Use exact entity_ids from the history data
 - Return empty arrays if no confident patterns found
-- Max 20 items per category
+- Max 30 items per category
 - Days use 3-letter abbreviations: Mon,Tue,Wed,Thu,Fri,Sat,Sun"""
 
 
@@ -143,7 +194,7 @@ class AnthropicAnalyzer:
             return {"routines": [], "correlations": [], "anomalies": []}
 
         now = datetime.now(timezone.utc)
-        prompt = _build_prompt(compact, now)
+        prompt = _build_prompt(compact, states, now)
         _LOGGER.info("AnthropicAnalyzer: analyzing %d entities with %s/%s", len(compact), self._provider, self._model)
 
         try:
@@ -170,7 +221,7 @@ class AnthropicAnalyzer:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1024,
+                max_tokens=4096,
             )
             return response.choices[0].message.content
 
