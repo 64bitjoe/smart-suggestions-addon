@@ -45,6 +45,36 @@ def test_empty_store_returns_empty_patterns(tmp_store):
     assert tmp_store.get_active_anomalies() == []
 
 
+def test_seed_patterns_loaded_on_first_run(tmp_path):
+    """When no patterns.json exists but a seed file does, load seed."""
+    import pattern_store as ps
+    old_seed = ps._SEED_PATH
+    seed_path = str(tmp_path / "seed.json")
+    seed_data = {
+        "routines": [
+            {"entity_id": "scene.morning", "typical_time": "08:00",
+             "days": ["Mon"], "confidence": 0.8, "source": "seed"}
+        ],
+        "correlations": [
+            {"entity_a": "light.a", "entity_b": "light.b",
+             "confidence": 0.9, "source": "seed"}
+        ],
+        "anomalies": [],
+    }
+    with open(seed_path, "w") as f:
+        json.dump(seed_data, f)
+    try:
+        ps._SEED_PATH = seed_path
+        store = PatternStore(path=str(tmp_path / "patterns.json"))
+        assert len(store.get_routines()) == 1
+        assert store.get_routines()[0]["entity_id"] == "scene.morning"
+        assert len(store.get_correlations()) == 1
+        # Seed should have been persisted to patterns.json
+        assert os.path.exists(str(tmp_path / "patterns.json"))
+    finally:
+        ps._SEED_PATH = old_seed
+
+
 def test_save_and_load_roundtrip(tmp_store):
     patterns = {
         "routines": [

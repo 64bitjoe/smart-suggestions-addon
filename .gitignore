@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.DS_Store
+
+# Local test scripts containing secrets (HA tokens, API keys)
+test_history.py
+test_anthropic.py

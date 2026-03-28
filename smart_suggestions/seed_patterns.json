@@ -1,0 +1,176 @@
+{
+  "routines": [
+    {
+      "entity_id": "scene.going_to_bed",
+      "typical_time": "00:00",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.85,
+      "occurrences": 10,
+      "source": "seed",
+      "description": "Bedtime — household typically winds down around midnight-1AM"
+    },
+    {
+      "entity_id": "scene.good_morning",
+      "typical_time": "10:00",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.65,
+      "occurrences": 6,
+      "source": "seed",
+      "description": "Morning routine — activated between 7:30AM and 2:30PM (varies)"
+    },
+    {
+      "entity_id": "scene.work_time",
+      "typical_time": "12:00",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "confidence": 0.7,
+      "occurrences": 5,
+      "source": "seed",
+      "description": "Work time scene — sets up office/work lighting around noon"
+    },
+    {
+      "entity_id": "scene.blue",
+      "typical_time": "20:00",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.6,
+      "occurrences": 4,
+      "source": "seed",
+      "description": "Evening mood lighting — blue color scene used in the evening"
+    },
+    {
+      "entity_id": "light.kitchen_main_lights",
+      "typical_time": "06:30",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.8,
+      "occurrences": 8,
+      "source": "seed",
+      "description": "Kitchen lights are the first to turn on each morning around 6:30AM"
+    },
+    {
+      "entity_id": "light.tall_lamp",
+      "typical_time": "10:30",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.75,
+      "occurrences": 7,
+      "source": "seed",
+      "description": "Living area accent lights come on mid-morning"
+    },
+    {
+      "entity_id": "light.garage_outdoor_lights",
+      "typical_time": "18:30",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.9,
+      "occurrences": 10,
+      "source": "seed",
+      "description": "Garage outdoor lights turn on at sunset (automated)"
+    },
+    {
+      "entity_id": "fan.smart_tower_fan_2_max",
+      "typical_time": "00:00",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.65,
+      "occurrences": 5,
+      "source": "seed",
+      "description": "Tower fan toggled on around midnight — used during bedtime"
+    },
+    {
+      "entity_id": "media_player.den_tv",
+      "typical_time": "18:30",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.7,
+      "occurrences": 7,
+      "source": "seed",
+      "description": "Den TV typically turns on in the evening for watching"
+    },
+    {
+      "entity_id": "fan.h7105",
+      "typical_time": "01:00",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      "confidence": 0.6,
+      "occurrences": 4,
+      "source": "seed",
+      "description": "Den tower fan toggled late at night"
+    }
+  ],
+  "correlations": [
+    {
+      "entity_a": "media_player.den_tv",
+      "entity_b": "media_player.den_3",
+      "confidence": 0.95,
+      "occurrences": 10,
+      "source": "seed",
+      "description": "Den TV and Sonos Beam always activate together"
+    },
+    {
+      "entity_a": "light.kitchen_main_lights",
+      "entity_b": "light.kitchen_under_cabinet",
+      "confidence": 0.9,
+      "occurrences": 8,
+      "source": "seed",
+      "description": "Kitchen main lights and under-cabinet always turn on/off together"
+    },
+    {
+      "entity_a": "light.kitchen_main_lights",
+      "entity_b": "light.hood_lights",
+      "confidence": 0.85,
+      "occurrences": 7,
+      "source": "seed",
+      "description": "Kitchen lights and hood lights turn on together in the morning"
+    },
+    {
+      "entity_a": "light.tall_lamp",
+      "entity_b": "light.wall_sconce",
+      "confidence": 0.9,
+      "occurrences": 7,
+      "source": "seed",
+      "description": "Living room accent lights always activated as a group"
+    },
+    {
+      "entity_a": "light.tall_lamp",
+      "entity_b": "light.uplights",
+      "confidence": 0.9,
+      "occurrences": 7,
+      "source": "seed",
+      "description": "Tall lamp and uplights always change state together"
+    },
+    {
+      "entity_a": "light.tall_lamp",
+      "entity_b": "light.den_ball_group",
+      "confidence": 0.9,
+      "occurrences": 7,
+      "source": "seed",
+      "description": "Living area accent group: tall lamp + balls"
+    },
+    {
+      "entity_a": "scene.going_to_bed",
+      "entity_b": "scene.violet_bedroom",
+      "confidence": 0.7,
+      "occurrences": 4,
+      "source": "seed",
+      "description": "Violet bedroom scene often follows going to bed scene"
+    }
+  ],
+  "anomalies": [
+    {
+      "entity_id": "cover.right_window_2",
+      "type": "energy_waste",
+      "description": "Kitchen windows open while heating is active at 37°F",
+      "severity": "high",
+      "source": "seed"
+    },
+    {
+      "entity_id": "vacuum.litter_robot_4_litter_box",
+      "type": "device_error",
+      "description": "Vlad litter box is in error state — needs attention",
+      "severity": "medium",
+      "source": "seed"
+    },
+    {
+      "entity_id": "climate.midea_climate",
+      "type": "energy_waste",
+      "description": "Air conditioner set to cool mode while it's 37°F outside",
+      "severity": "medium",
+      "source": "seed"
+    }
+  ],
+  "updated_at": "2026-03-28T02:48:00+00:00"
+}

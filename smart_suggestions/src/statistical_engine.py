@@ -76,6 +76,17 @@ class StatisticalEngine:
     def score_realtime(self, states: dict) -> list[dict]:
         """Score all actionable entities with context-aware signals. Returns sorted candidate list."""
         now = datetime.now(timezone.utc)
+
+        # Extract weather temperature for context-aware scoring
+        weather_temp = None
+        for eid, st in states.items():
+            if eid.startswith("weather.") and st.get("attributes", {}).get("temperature") is not None:
+                try:
+                    weather_temp = float(st["attributes"]["temperature"])
+                except (ValueError, TypeError):
+                    pass
+                break
+
         routines_by_eid = {r["entity_id"]: r for r in self._store.get_routines()}
         correlations = self._store.get_correlations()
         anomalies_by_eid = {a["entity_id"]: a for a in self._store.get_active_anomalies()}
@@ -124,6 +135,15 @@ class StatisticalEngine:
                 score += 5
                 reason_parts.append("evening — prime media time")
 
+            # Weather-aware scoring
+            if weather_temp is not None:
+                if domain == "cover" and s == "open" and weather_temp < 45:
+                    score += 18
+                    reason_parts.append(f"open while it's {weather_temp}°F outside — close to save energy")
+                elif domain == "climate" and "cool" in s and weather_temp < 50:
+                    score += 15
+                    reason_parts.append(f"cooling while it's only {weather_temp}°F outside")
+
             # Recently changed boost (entity changed in last 60 min)
             last_changed_str = state.get("last_changed", "")
             if last_changed_str:
@@ -153,6 +173,12 @@ class StatisticalEngine:
                         reason_parts.append(f"open for {int(hours_active)}h")
                 except (ValueError, TypeError):
                     pass
+
+            # Device error detection
+            if s == "error" and domain in ("vacuum", "climate", "fan"):
+                score += 20
+                name_str = state.get("attributes", {}).get("friendly_name", eid)
+                reason_parts.append(f"{name_str} is in error state — needs attention")
 
             # Scene-specific scoring
             if domain == "scene":

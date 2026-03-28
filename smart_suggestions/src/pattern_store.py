@@ -10,6 +10,7 @@ from typing import Any
 _LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_PATH = "/data/patterns.json"
+_SEED_PATH = "/opt/smart_suggestions/seed_patterns.json"
 _TTL_STATISTICAL_HOURS = 24
 _TTL_ANTHROPIC_DAYS = 7
 _TTL_ANOMALY_HOURS = 4
@@ -62,13 +63,31 @@ class PatternStore:
             with open(self._path) as f:
                 raw = json.load(f)
             if not isinstance(raw, dict):
-                return self._empty()
+                return self._load_seed()
             return self._migrate(raw)
         except FileNotFoundError:
-            return self._empty()
+            return self._load_seed()
         except Exception as e:
-            _LOGGER.warning("PatternStore: could not read %s: %s — starting empty", self._path, e)
-            return self._empty()
+            _LOGGER.warning("PatternStore: could not read %s: %s — trying seed", self._path, e)
+            return self._load_seed()
+
+    def _load_seed(self) -> dict:
+        """Load seed patterns for first-run bootstrap."""
+        try:
+            with open(_SEED_PATH) as f:
+                raw = json.load(f)
+            if isinstance(raw, dict) and any(raw.get(k) for k in ("routines", "correlations", "anomalies")):
+                _LOGGER.info("PatternStore: loaded seed patterns (%d routines, %d correlations, %d anomalies)",
+                             len(raw.get("routines", [])), len(raw.get("correlations", [])), len(raw.get("anomalies", [])))
+                migrated = self._migrate(raw)
+                self._data = migrated
+                self._save()
+                return migrated
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            _LOGGER.warning("PatternStore: could not read seed %s: %s", _SEED_PATH, e)
+        return self._empty()
 
     def _empty(self) -> dict:
         return {"routines": [], "correlations": [], "anomalies": []}
