@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable
 import aiohttp
 import yarl
@@ -90,63 +92,135 @@ class HAClient:
             _LOGGER.info("Triggering refresh cycle (%d states)", len(self._states))
             await self._on_states_ready(self._states)
 
+    # ── Possible DB paths (mapped via config:ro) ──
+    _DB_PATHS = [
+        "/config/home-assistant_v2.db",
+        "/homeassistant/home-assistant_v2.db",
+    ]
+
     async def fetch_history(self, hours: int) -> dict[str, list]:
-        """Fetch entity history via HA REST API, batched to avoid URL length limits."""
-        if not self._session or not self._states:
+        """Fetch entity history — tries SQLite DB first, falls back to REST API."""
+        if not self._states:
             return {}
 
         from const import _ACTION_DOMAINS, _CONTEXT_ONLY_DOMAINS
-        start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # Only fetch history for actionable + context domains (not all 3000+ entities)
         relevant_domains = _ACTION_DOMAINS | _CONTEXT_ONLY_DOMAINS
-        all_ids = [eid for eid in self._states if eid.split(".")[0] in relevant_domains]
+        relevant_eids = {eid for eid in self._states if eid.split(".")[0] in relevant_domains}
 
-        # --- Diagnostic: try a single well-known entity first ---
-        test_eid = next((e for e in all_ids if e.startswith("light.")), all_ids[0] if all_ids else None)
-        if test_eid:
-            diag_url = f"{self._base}/history/period/{start}?filter_entity_id={test_eid}"
-            _LOGGER.info("History diagnostic: GET %s", diag_url)
-            try:
-                async with self._session.get(
-                    yarl.URL(diag_url, encoded=True),
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    raw_text = await resp.text()
-                    _LOGGER.info(
-                        "History diagnostic: HTTP %s, content-type=%s, body[:500]=%s",
-                        resp.status, resp.content_type, raw_text[:500],
-                    )
-            except Exception as e:
-                _LOGGER.warning("History diagnostic failed: %s", e)
+        # Try direct DB read first (much more reliable than REST history API)
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, self._fetch_history_from_db, hours, relevant_eids
+        )
+        if result:
+            _LOGGER.info("Fetched history for %d entities from SQLite DB", len(result))
+            return result
 
-        # Batch into chunks of 50
+        # Fallback to REST API
+        _LOGGER.info("SQLite DB not available — falling back to REST history API")
+        return await self._fetch_history_rest(hours, relevant_eids)
+
+    def _fetch_history_from_db(self, hours: int, relevant_eids: set[str]) -> dict[str, list]:
+        """Read history directly from HA's SQLite recorder database."""
+        db_path = None
+        for p in self._DB_PATHS:
+            if Path(p).exists():
+                db_path = p
+                break
+        if not db_path:
+            _LOGGER.info("No HA SQLite DB found at %s", self._DB_PATHS)
+            return {}
+
+        _LOGGER.info("Reading history from %s", db_path)
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp()
+
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+            conn.row_factory = sqlite3.Row
+
+            # Detect schema version: new HA uses states_meta table
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            use_meta = "states_meta" in tables
+
+            if use_meta:
+                _LOGGER.info("Using new HA schema (states_meta)")
+                rows = conn.execute("""
+                    SELECT sm.entity_id, s.state, s.last_changed_ts, s.last_updated_ts
+                    FROM states s
+                    JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+                    WHERE s.last_updated_ts > ?
+                    ORDER BY s.last_updated_ts ASC
+                """, (cutoff_ts,)).fetchall()
+            else:
+                _LOGGER.info("Using legacy HA schema (entity_id in states)")
+                rows = conn.execute("""
+                    SELECT entity_id, state, last_changed, last_updated
+                    FROM states
+                    WHERE last_updated > ?
+                    ORDER BY last_updated ASC
+                """, (datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat(),)).fetchall()
+
+            conn.close()
+        except Exception as e:
+            _LOGGER.warning("Failed to read HA DB: %s", e)
+            return {}
+
+        _LOGGER.info("DB query returned %d rows", len(rows))
+
+        # Group by entity_id into REST-API-compatible format
+        result: dict[str, list] = {}
+        for row in rows:
+            eid = row["entity_id"] if "entity_id" in row.keys() else row[0]
+            if eid not in relevant_eids:
+                continue
+            state = row["state"] if "state" in row.keys() else row[1]
+            if state in ("unknown", "unavailable"):
+                continue
+
+            # Convert timestamps
+            if use_meta:
+                ts_val = row["last_changed_ts"] if "last_changed_ts" in row.keys() else row[2]
+                if ts_val:
+                    last_changed = datetime.fromtimestamp(ts_val, tz=timezone.utc).isoformat()
+                else:
+                    last_changed = ""
+            else:
+                last_changed = row["last_changed"] if "last_changed" in row.keys() else row[2]
+                if last_changed is None:
+                    last_changed = ""
+
+            entry = {
+                "entity_id": eid,
+                "state": state,
+                "last_changed": last_changed,
+            }
+            result.setdefault(eid, []).append(entry)
+
+        _LOGGER.info("Grouped history: %d entities with state changes", len(result))
+        return result
+
+    async def _fetch_history_rest(self, hours: int, relevant_eids: set[str]) -> dict[str, list]:
+        """Fetch entity history via HA REST API, batched to avoid URL length limits."""
+        if not self._session:
+            return {}
+
+        start = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        all_ids = list(relevant_eids)
         chunk_size = 50
         chunks = [all_ids[i:i + chunk_size] for i in range(0, len(all_ids), chunk_size)]
-        _LOGGER.info("fetch_history: %d entities, %d chunks, start=%s", len(all_ids), len(chunks), start)
+        _LOGGER.info("REST fetch_history: %d entities, %d chunks, start=%s", len(all_ids), len(chunks), start)
 
         result: dict[str, list] = {}
         for chunk_idx, chunk in enumerate(chunks):
             entity_ids_str = ",".join(chunk)
-            raw_url = (
-                f"{self._base}/history/period/{start}"
-                f"?filter_entity_id={entity_ids_str}"
-            )
+            raw_url = f"{self._base}/history/period/{start}?filter_entity_id={entity_ids_str}"
             url = yarl.URL(raw_url, encoded=True)
-            if chunk_idx == 0:
-                _LOGGER.info("History URL (chunk 0): %s", str(url)[:500])
             try:
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status != 200:
-                        body = await resp.text()
-                        _LOGGER.warning("History chunk %d: HTTP %s — body: %.500s", chunk_idx, resp.status, body)
                         continue
                     data = await resp.json()
-                    if chunk_idx < 3:
-                        _LOGGER.info(
-                            "History chunk %d: got %d groups; first group sample: %s",
-                            chunk_idx, len(data),
-                            (str(data[0][0])[:200] if data and data[0] else "EMPTY"),
-                        )
                     for entity_history in data:
                         if entity_history:
                             eid = entity_history[0].get("entity_id")
@@ -155,7 +229,7 @@ class HAClient:
             except Exception as e:
                 _LOGGER.warning("Failed to fetch history chunk %d: %s", chunk_idx, e)
 
-        _LOGGER.info("Fetched history for %d entities", len(result))
+        _LOGGER.info("REST fetched history for %d entities", len(result))
         return result
 
     async def write_suggestions_state(self, suggestions: list) -> None:
