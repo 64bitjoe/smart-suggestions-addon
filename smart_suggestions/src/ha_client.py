@@ -100,8 +100,8 @@ class HAClient:
         # Only fetch history for actionable + context domains (not all 3000+ entities)
         relevant_domains = _ACTION_DOMAINS | _CONTEXT_ONLY_DOMAINS
         all_ids = [eid for eid in self._states if eid.split(".")[0] in relevant_domains]
-        # Batch into chunks of 100 to stay well under URL length limits
-        chunk_size = 100
+        # Batch into chunks of 50 to stay safely under URL length limits
+        chunk_size = 50
         chunks = [all_ids[i:i + chunk_size] for i in range(0, len(all_ids), chunk_size)]
 
         _LOGGER.info(
@@ -113,25 +113,29 @@ class HAClient:
             # Build URL with literal commas — urlencode would encode them as %2C,
             # causing HA to treat the entire list as one unknown entity ID.
             entity_ids_str = ",".join(chunk)
+            # Use bare flags (no =1) for HA compatibility; use minimal_response
+            # instead of no_attributes for broader version support
             url = yarl.URL(
                 f"{self._base}/history/period/{start}"
-                f"?filter_entity_id={entity_ids_str}&significant_changes_only=1&no_attributes=1",
+                f"?filter_entity_id={entity_ids_str}"
+                f"&minimal_response&significant_changes_only",
                 encoded=True,
             )
             if chunk_idx == 0:
-                _LOGGER.info("History URL (chunk 0): %s", str(url)[:300])
+                _LOGGER.info("History URL (chunk 0): %s", str(url)[:500])
             try:
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status != 200:
-                        _LOGGER.warning("History API returned HTTP %s — body: %s",
-                                        resp.status, await resp.text())
+                        body = await resp.text()
+                        _LOGGER.warning("History API returned HTTP %s — body: %.500s",
+                                        resp.status, body)
                         continue
                     data = await resp.json()
-                    if chunk_idx == 0:
+                    if chunk_idx < 3:
                         _LOGGER.info(
-                            "History chunk 0: got %d groups; first group sample: %s",
-                            len(data),
-                            (data[0][0] if data and data[0] else "EMPTY"),
+                            "History chunk %d: got %d groups; first group sample: %s",
+                            chunk_idx, len(data),
+                            (str(data[0][0])[:200] if data and data[0] else "EMPTY"),
                         )
                     for entity_history in data:
                         if entity_history:
@@ -139,7 +143,7 @@ class HAClient:
                             if eid:
                                 result[eid] = entity_history
             except Exception as e:
-                _LOGGER.warning("Failed to fetch history chunk: %s", e)
+                _LOGGER.warning("Failed to fetch history chunk %d: %s", chunk_idx, e)
 
         _LOGGER.info("Fetched history for %d entities", len(result))
         return result
