@@ -197,6 +197,11 @@ _UI_HTML = """<!DOCTYPE html>
   <span id="meta-text">Connecting…</span>
 </div>
 
+<div id="first-run-banner" style="display:none;background:linear-gradient(135deg,rgba(0,122,255,0.12),rgba(52,199,89,0.08));border:1px solid rgba(0,122,255,0.2);border-radius:14px;padding:16px;margin-bottom:16px;text-align:center;">
+  <div style="font-size:15px;font-weight:600;margin-bottom:8px;">🧠 No pattern analysis yet</div>
+  <div style="font-size:13px;color:#8E8E93;margin-bottom:12px;">Run a deep analysis to discover your home's routines, correlations, and anomalies.</div>
+  <button class="refresh-btn" id="first-run-analyze" style="margin:0 auto;">🧠 Analyze Now</button>
+</div>
 <div class="revelations" id="revelations"></div>
 <div id="list-container"></div>
 
@@ -390,6 +395,25 @@ document.getElementById('refresh-btn').addEventListener('click', async () => {
   setTimeout(() => { btn.classList.remove('loading'); btn.textContent = '⟳ Refresh'; }, 2000);
 });
 
+// ── First-run analyze banner ──
+document.getElementById('first-run-analyze').addEventListener('click', async () => {
+  const btn = document.getElementById('first-run-analyze');
+  btn.classList.add('loading');
+  btn.textContent = '⏳ Analyzing…';
+  try {
+    await fetch(BASE + '/analyze', { method: 'POST' });
+    showToast('🧠 Analysis started — this may take a minute');
+  } catch { showToast('⚠️ Could not start analysis'); }
+  setTimeout(() => { btn.classList.remove('loading'); btn.textContent = '🧠 Analyze Now'; }, 3000);
+});
+
+function updateFirstRunBanner(status) {
+  const banner = document.getElementById('first-run-banner');
+  if (!banner) return;
+  const hasAnalysis = status && status.last_analysis && status.last_analysis !== 'Never';
+  banner.style.display = hasAnalysis ? 'none' : '';
+}
+
 // ── Inject panel ──
 let _injectOpen = false;
 document.getElementById('inject-toggle').addEventListener('click', async () => {
@@ -522,7 +546,7 @@ function connectWS() {
     if (msg.type === 'suggestions') { _suggestions = Array.isArray(msg.data) ? msg.data : []; _status = 'ready'; render(); }
     else if (msg.type === 'status') { _status = msg.state || 'idle'; render(); }
     else if (msg.type === 'log') { appendLog(msg); }
-    else if (msg.type === 'system_status') { renderStatusData(msg.data); }
+    else if (msg.type === 'system_status') { renderStatusData(msg.data); updateFirstRunBanner(msg.data); }
     else if (msg.type === 'patterns') {
       _patterns = msg.data;
       if (msg.new_keys && msg.new_keys.length) { msg.new_keys.forEach(k => _newPatternKeys.add(k)); renderRevelations(); }
@@ -576,6 +600,7 @@ async function refreshStatus() {
     const r = await fetch(BASE + '/status');
     const s = await r.json();
     renderStatusData(s);
+    updateFirstRunBanner(s);
   } catch (e) {
     if (el) el.textContent = '⚠️ Could not load status: ' + e;
   }

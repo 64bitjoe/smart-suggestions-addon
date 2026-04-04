@@ -80,6 +80,8 @@ class PatternStore:
                 _LOGGER.info("PatternStore: loaded seed patterns (%d routines, %d correlations, %d anomalies)",
                              len(raw.get("routines", [])), len(raw.get("correlations", [])), len(raw.get("anomalies", [])))
                 migrated = self._migrate(raw)
+                migrated["seeded"] = True
+                migrated.pop("updated_at", None)  # Keep needs_fresh_analysis() returning True
                 self._data = migrated
                 self._save()
                 return migrated
