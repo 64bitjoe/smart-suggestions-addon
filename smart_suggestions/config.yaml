@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "2.4.0"
+version: "2.4.1"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -32,7 +32,7 @@ options:
   ai_provider: "anthropic"
   ai_api_key: ""
   ai_base_url: ""
-  ai_model: "claude-opus-4-6"
+  ai_model: "claude-haiku-4-5-20251001"
   correlation_window_minutes: 15
   pattern_confidence_threshold: 0.6
   domains:
