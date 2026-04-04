@@ -100,35 +100,45 @@ class HAClient:
         # Only fetch history for actionable + context domains (not all 3000+ entities)
         relevant_domains = _ACTION_DOMAINS | _CONTEXT_ONLY_DOMAINS
         all_ids = [eid for eid in self._states if eid.split(".")[0] in relevant_domains]
-        # Batch into chunks of 50 to stay safely under URL length limits
+
+        # --- Diagnostic: try a single well-known entity first ---
+        test_eid = next((e for e in all_ids if e.startswith("light.")), all_ids[0] if all_ids else None)
+        if test_eid:
+            diag_url = f"{self._base}/history/period/{start}?filter_entity_id={test_eid}"
+            _LOGGER.info("History diagnostic: GET %s", diag_url)
+            try:
+                async with self._session.get(
+                    yarl.URL(diag_url, encoded=True),
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    raw_text = await resp.text()
+                    _LOGGER.info(
+                        "History diagnostic: HTTP %s, content-type=%s, body[:500]=%s",
+                        resp.status, resp.content_type, raw_text[:500],
+                    )
+            except Exception as e:
+                _LOGGER.warning("History diagnostic failed: %s", e)
+
+        # Batch into chunks of 50
         chunk_size = 50
         chunks = [all_ids[i:i + chunk_size] for i in range(0, len(all_ids), chunk_size)]
+        _LOGGER.info("fetch_history: %d entities, %d chunks, start=%s", len(all_ids), len(chunks), start)
 
-        _LOGGER.info(
-            "fetch_history: %d entities, %d chunks, start=%s",
-            len(all_ids), len(chunks), start,
-        )
         result: dict[str, list] = {}
         for chunk_idx, chunk in enumerate(chunks):
-            # Build URL with literal commas — urlencode would encode them as %2C,
-            # causing HA to treat the entire list as one unknown entity ID.
             entity_ids_str = ",".join(chunk)
-            # Use bare flags (no =1) for HA compatibility; use minimal_response
-            # instead of no_attributes for broader version support
-            url = yarl.URL(
+            raw_url = (
                 f"{self._base}/history/period/{start}"
                 f"?filter_entity_id={entity_ids_str}"
-                f"&minimal_response&significant_changes_only",
-                encoded=True,
             )
+            url = yarl.URL(raw_url, encoded=True)
             if chunk_idx == 0:
                 _LOGGER.info("History URL (chunk 0): %s", str(url)[:500])
             try:
                 async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                     if resp.status != 200:
                         body = await resp.text()
-                        _LOGGER.warning("History API returned HTTP %s — body: %.500s",
-                                        resp.status, body)
+                        _LOGGER.warning("History chunk %d: HTTP %s — body: %.500s", chunk_idx, resp.status, body)
                         continue
                     data = await resp.json()
                     if chunk_idx < 3:
