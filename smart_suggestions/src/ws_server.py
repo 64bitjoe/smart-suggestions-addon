@@ -68,6 +68,7 @@ _UI_HTML = """<!DOCTYPE html>
   .card-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; background: #2C2C2E; }
   .card-body { flex: 1; min-width: 0; }
   .card-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-domain { font-size: 11px; color: #636366; margin-top: 1px; font-family: 'SF Mono','Menlo','Consolas',monospace; }
   .card-reason { font-size: 13px; color: #8E8E93; margin-top: 3px; line-height: 1.4; }
   .vote-area { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .vote-btn { width: 36px; height: 36px; border: none; border-radius: 50%; background: rgba(255,255,255,0.08); color: #fff; font-size: 17px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s, transform 0.1s; -webkit-tap-highlight-color: transparent; }
@@ -304,6 +305,7 @@ function makeRow(s, i) {
       <div class="card-icon">${domainEmoji(s.entity_id)}</div>
       <div class="card-body">
         <div class="card-name">${s.name || s.entity_id || ''}</div>
+        <div class="card-domain">${(s.entity_id || '').split('.')[0]} · ${s.entity_id || ''}</div>
         <div class="card-reason">${s.reason || ''}</div>
       </div>
       <div class="vote-area">
