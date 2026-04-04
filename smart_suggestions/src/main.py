@@ -26,6 +26,7 @@ _LOGGER = logging.getLogger("smart_suggestions")
 
 _OPTIONS_FILE = "/data/options.json"
 _FEEDBACK_FILE = "/data/feedback.json"
+_DENY_LIST_FILE = "/data/deny_list.json"
 
 
 def _load_options() -> dict:
@@ -66,15 +67,17 @@ class SmartSuggestionsAddon:
             confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
         )
         _key = opts.get("ai_api_key", "")
+        _ai_model = opts.get("ai_model", "claude-haiku-4-5-20251001")
+        _deep_model = opts.get("deep_analysis_model", "") or _ai_model
         narrator_provider = opts.get("narrator_provider", "ai" if _key else "ollama")
         if narrator_provider == "ai" and _key:
             self._narrator = AINarrator(
                 ai_provider=opts.get("ai_provider", "anthropic"),
                 ai_api_key=_key,
-                ai_model=opts.get("ai_model", "claude-opus-4-6"),
+                ai_model=_ai_model,
                 ai_base_url=opts.get("ai_base_url", ""),
             )
-            _LOGGER.info("Narrator: using %s/%s", opts.get("ai_provider", "anthropic"), opts.get("ai_model", "claude-opus-4-6"))
+            _LOGGER.info("Narrator: using %s/%s", opts.get("ai_provider", "anthropic"), _ai_model)
         else:
             self._narrator = OllamaNarrator(
                 ollama_url=opts.get("ollama_url", "http://localhost:11434"),
@@ -82,20 +85,22 @@ class SmartSuggestionsAddon:
             )
             _LOGGER.info("Narrator: using Ollama at %s", opts.get("ollama_url", "http://localhost:11434"))
         _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
+        _LOGGER.info("Models: narration=%s, deep_analysis=%s", _ai_model, _deep_model)
         self._analyzer = AnthropicAnalyzer(
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=_key,
-            ai_model=opts.get("ai_model", "claude-opus-4-6"),
+            ai_model=_deep_model,
             analysis_depth_days=int(opts.get("analysis_depth_days", 7)),
             ai_base_url=opts.get("ai_base_url", ""),
         )
         self._automation_builder = AutomationBuilder(
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=_key,
-            ai_model=opts.get("ai_model", "claude-opus-4-6"),
+            ai_model=_ai_model,
             ai_base_url=opts.get("ai_base_url", ""),
         )
         self._usage_log = UsageLog("/data/usage.db")
+        self._deny_set: set[str] = self._load_deny_list()
         self._ha: HAClient | None = None
         self._refresh_lock = asyncio.Lock()
         self._last_suggestions: list = []
@@ -130,6 +135,31 @@ class SmartSuggestionsAddon:
         }
         if any(patterns.values()):
             self._ws_server.set_patterns(patterns)
+
+    @staticmethod
+    def _load_deny_list() -> set[str]:
+        try:
+            with open(_DENY_LIST_FILE) as f:
+                data = json.load(f)
+            return set(data) if isinstance(data, list) else set()
+        except (FileNotFoundError, json.JSONDecodeError):
+            return set()
+
+    def _save_deny_list(self) -> None:
+        with open(_DENY_LIST_FILE, "w") as f:
+            json.dump(sorted(self._deny_set), f)
+
+    async def _on_deny_entity(self, entity_id: str) -> None:
+        self._deny_set.add(entity_id)
+        self._save_deny_list()
+        _LOGGER.info("Entity denied: %s (%d total)", entity_id, len(self._deny_set))
+        if self._last_states:
+            await self._run_refresh_cycle(self._last_states)
+
+    async def _on_undeny_entity(self, entity_id: str) -> None:
+        self._deny_set.discard(entity_id)
+        self._save_deny_list()
+        _LOGGER.info("Entity un-denied: %s (%d total)", entity_id, len(self._deny_set))
 
     async def _build_narrator_context(self, states: dict) -> dict:
         """Assemble rich context dict for the Ollama narrator."""
@@ -227,7 +257,7 @@ class SmartSuggestionsAddon:
             await self._ws_server.broadcast_status("updating")
             try:
                 # Score candidates deterministically
-                candidates = self._stat_engine.score_realtime(states)
+                candidates = self._stat_engine.score_realtime(states, deny_set=self._deny_set)
                 # Rank scenes first, apply feedback from UsageLog
                 entity_ids = [c["entity_id"] for c in candidates]
                 feedback_scores = await self._usage_log.get_feedback_scores(entity_ids)
@@ -384,6 +414,9 @@ class SmartSuggestionsAddon:
         self._ws_server.register_analyze_handler(self._on_trigger_analysis)
         self._ws_server.register_refresh_all_handler(self._on_trigger_refresh_all)
         self._ws_server.register_automation_handler(self._on_save_automation)
+        self._ws_server.register_deny_handler(self._on_deny_entity)
+        self._ws_server.register_undeny_handler(self._on_undeny_entity)
+        self._ws_server.set_deny_list(self._deny_set)
         self._ws_server.set_usage_log(self._usage_log)
         self._ws_server.set_automation_builder(self._automation_builder)
         self._push_system_status()

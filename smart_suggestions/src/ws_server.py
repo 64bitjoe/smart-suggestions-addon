@@ -158,6 +158,29 @@ _UI_HTML = """<!DOCTYPE html>
   .pattern-btn-nah { background: rgba(255,255,255,0.08); color: #8E8E93; }
   .pattern-empty { text-align: center; padding: 20px; color: #636366; font-size: 14px; }
 
+  /* ── Deny button ── */
+  .deny-btn { width: 28px; height: 28px; border: none; border-radius: 50%; background: none; color: #636366; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: color 0.15s, background 0.15s; -webkit-tap-highlight-color: transparent; flex-shrink: 0; }
+  .deny-btn:hover { background: rgba(255,59,48,0.15); color: #FF3B30; }
+  .deny-btn:active { transform: scale(0.88); }
+
+  /* ── Revelations banner ── */
+  .revelations { margin-bottom: 16px; }
+  .revelation-card { background: linear-gradient(135deg, rgba(175,82,222,0.15), rgba(0,122,255,0.10)); border: 1px solid rgba(175,82,222,0.25); border-radius: 14px; padding: 14px 16px; margin-bottom: 8px; animation: revealIn 0.4s ease-out; }
+  @keyframes revealIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+  .revelation-header { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #BF7AF0; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .revelation-item { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; }
+  .revelation-icon { font-size: 18px; flex-shrink: 0; }
+  .revelation-text { font-size: 14px; color: #ddd; line-height: 1.4; }
+  .revelation-dismiss { background: none; border: none; color: #636366; font-size: 12px; cursor: pointer; margin-top: 8px; padding: 4px 8px; }
+  .revelation-dismiss:hover { color: #8E8E93; }
+
+  /* ── Deny list panel ── */
+  .deny-row { background: #1C1C1E; display: flex; align-items: center; padding: 10px 14px; gap: 10px; border-top: 0.5px solid rgba(255,255,255,0.07); }
+  .deny-row:first-child { border-top: none; }
+  .deny-eid { flex: 1; font-size: 14px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .undeny-btn { background: rgba(52,199,89,0.18); color: #34C759; border: none; border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+  .undeny-btn:active { background: rgba(52,199,89,0.35); }
+
   /* ── Toast ── */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #2C2C2E; color: #fff; padding: 10px 18px; border-radius: 20px; font-size: 14px; font-weight: 500; transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); pointer-events: none; white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
   .toast.show { transform: translateX(-50%) translateY(0); }
@@ -174,6 +197,7 @@ _UI_HTML = """<!DOCTYPE html>
   <span id="meta-text">Connecting…</span>
 </div>
 
+<div class="revelations" id="revelations"></div>
 <div id="list-container"></div>
 
 <div class="panel-wrap">
@@ -208,6 +232,26 @@ _UI_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<div class="panel-wrap" id="trends-panel-wrap" style="display:none">
+  <button class="panel-toggle" id="trends-toggle">
+    <span>📈 Trends &amp; Insights</span>
+    <span id="trends-arrow">▶</span>
+  </button>
+  <div class="panel-body" id="trends-panel">
+    <div id="trends-content" style="background:rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;"></div>
+  </div>
+</div>
+
+<div class="panel-wrap" id="deny-panel-wrap" style="display:none">
+  <button class="panel-toggle" id="deny-toggle">
+    <span>🚫 Blocked Entities <span id="deny-badge" style="background:rgba(255,59,48,0.2);color:#FF3B30;font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle;"></span></span>
+    <span id="deny-arrow">▶</span>
+  </button>
+  <div class="panel-body" id="deny-panel">
+    <div id="deny-content" style="background:rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;"></div>
+  </div>
+</div>
+
 <div class="panel-wrap">
   <button class="panel-toggle" id="log-toggle">
     <span>📋 Live Logs</span>
@@ -231,6 +275,9 @@ let _suggestions = __SUGGESTIONS__;
 let _entities = [];
 let _status = 'idle';
 let _patterns = null;
+let _denyList = new Set();
+let _newPatternKeys = new Set();
+let _seenRevelations = new Set(JSON.parse(localStorage.getItem('seenRevelations') || '[]'));
 let _dismissedPatterns = new Set(JSON.parse(sessionStorage.getItem('dismissedPatterns') || '[]'));
 
 function net(eid) {
@@ -258,6 +305,7 @@ function makeRow(s, i) {
         <button class="vote-btn up" data-eid="${s.entity_id}" data-vote="up" title="Thumbs up">👍</button>
         <span class="score ${scoreClass}">${score > 0 ? '+' + score : score}</span>
         <button class="vote-btn down" data-eid="${s.entity_id}" data-vote="down" title="Thumbs down">👎</button>
+        <button class="deny-btn" data-eid="${s.entity_id}" title="Block this entity">🚫</button>
       </div>
     </div>`;
 }
@@ -310,6 +358,22 @@ function render() {
         showToast(vote === 'up' ? '👍 Upvoted — refreshing…' : '👎 Downvoted — refreshing…');
         render();
       } catch { showToast('⚠️ Vote failed'); }
+    });
+  });
+
+  container.querySelectorAll('.deny-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const eid = btn.dataset.eid;
+      try {
+        await fetch(BASE + '/deny', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entity_id: eid }),
+        });
+        _denyList.add(eid);
+        showToast('🚫 ' + eid + ' blocked');
+        renderDenyPanel();
+      } catch { showToast('⚠️ Block failed'); }
     });
   });
 }
@@ -459,7 +523,15 @@ function connectWS() {
     else if (msg.type === 'status') { _status = msg.state || 'idle'; render(); }
     else if (msg.type === 'log') { appendLog(msg); }
     else if (msg.type === 'system_status') { renderStatusData(msg.data); }
-    else if (msg.type === 'patterns') { _patterns = msg.data; updatePatternsBadge(); if (_patternsOpen) renderPatterns(); }
+    else if (msg.type === 'patterns') {
+      _patterns = msg.data;
+      if (msg.new_keys && msg.new_keys.length) { msg.new_keys.forEach(k => _newPatternKeys.add(k)); renderRevelations(); }
+      updatePatternsBadge();
+      if (_patternsOpen) renderPatterns();
+      document.getElementById('trends-panel-wrap').style.display = '';
+      if (_trendsOpen) renderTrends();
+    }
+    else if (msg.type === 'deny_list') { _denyList = new Set(msg.data || []); renderDenyPanel(); }
   });
   ws.addEventListener('close', () => {
     document.getElementById('status-dot').className = 'status-dot';
@@ -661,7 +733,168 @@ function updatePatternsBadge() {
   if (wrap) wrap.style.display = '';
 }
 
+// ── Revelations (new discoveries) ──
+function renderRevelations() {
+  const el = document.getElementById('revelations');
+  if (!_patterns || !_newPatternKeys.size) { el.innerHTML = ''; return; }
+  // Filter to unseen revelations
+  const unseen = [..._newPatternKeys].filter(k => !_seenRevelations.has(k));
+  if (!unseen.length) { el.innerHTML = ''; return; }
+
+  const items = unseen.map(key => {
+    if (key.startsWith('r_')) {
+      const r = (_patterns.routines||[]).find(r => 'r_'+r.entity_id+'_'+(r.name||'') === key);
+      if (r) return `<div class="revelation-item"><span class="revelation-icon">🔁</span><span class="revelation-text"><b>${escHtml(r.name||r.entity_id)}</b> — routine detected at ${r.typical_time||'?'}</span></div>`;
+    } else if (key.startsWith('c_')) {
+      const c = (_patterns.correlations||[]).find(c => 'c_'+c.entity_a+'_'+c.entity_b === key);
+      if (c) return `<div class="revelation-item"><span class="revelation-icon">🔗</span><span class="revelation-text">${escHtml(c.pattern||c.entity_a+' → '+c.entity_b)}</span></div>`;
+    } else if (key.startsWith('a_')) {
+      const a = (_patterns.anomalies||[]).find(a => 'a_'+a.entity_id === key);
+      if (a) return `<div class="revelation-item"><span class="revelation-icon">🚨</span><span class="revelation-text"><b>${escHtml(a.entity_id)}</b> — ${escHtml(a.description||'anomaly detected')}</span></div>`;
+    }
+    return '';
+  }).filter(Boolean);
+
+  if (!items.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="revelation-card">
+    <div class="revelation-header">✨ New Discoveries</div>
+    ${items.join('')}
+    <button class="revelation-dismiss" id="dismiss-revelations">Mark as seen</button>
+  </div>`;
+  document.getElementById('dismiss-revelations').addEventListener('click', () => {
+    unseen.forEach(k => _seenRevelations.add(k));
+    localStorage.setItem('seenRevelations', JSON.stringify([..._seenRevelations]));
+    el.innerHTML = '';
+  });
+}
+
+// ── Trends panel ──
+function renderTrends() {
+  if (!_patterns) return;
+  const routines = _patterns.routines || [];
+  const correlations = _patterns.correlations || [];
+  const anomalies = _patterns.anomalies || [];
+  const el = document.getElementById('trends-content');
+  if (!el) return;
+  if (!routines.length && !correlations.length && !anomalies.length) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;color:#636366;font-size:14px;">No trends yet — run a pattern analysis first.</div>';
+    return;
+  }
+
+  let html = '';
+  // Time-of-day activity heatmap (simple text version)
+  const hourBuckets = {};
+  routines.forEach(r => {
+    const h = parseInt((r.typical_time||'').split(':')[0], 10);
+    if (!isNaN(h)) hourBuckets[h] = (hourBuckets[h]||0) + 1;
+  });
+  if (Object.keys(hourBuckets).length > 1) {
+    const peak = Object.entries(hourBuckets).sort((a,b) => b[1]-a[1])[0];
+    const peakHr = parseInt(peak[0]);
+    const peakLabel = peakHr < 12 ? peakHr + ' AM' : peakHr === 12 ? '12 PM' : (peakHr-12) + ' PM';
+    html += `<div style="padding:10px 14px;border-bottom:0.5px solid rgba(255,255,255,0.07);">
+      <div style="font-size:13px;font-weight:600;color:#4DA6FF;">⏰ Peak Activity</div>
+      <div style="font-size:13px;color:#8E8E93;margin-top:4px;">Most routines happen around <b style="color:#fff">${peakLabel}</b> (${peak[1]} routines)</div>
+    </div>`;
+  }
+
+  // Most connected entities
+  const entityMentions = {};
+  routines.forEach(r => { entityMentions[r.entity_id] = (entityMentions[r.entity_id]||0) + 1; });
+  correlations.forEach(c => {
+    entityMentions[c.entity_a] = (entityMentions[c.entity_a]||0) + 1;
+    entityMentions[c.entity_b] = (entityMentions[c.entity_b]||0) + 1;
+  });
+  const topEntities = Object.entries(entityMentions).sort((a,b) => b[1]-a[1]).slice(0,5);
+  if (topEntities.length) {
+    html += `<div style="padding:10px 14px;border-bottom:0.5px solid rgba(255,255,255,0.07);">
+      <div style="font-size:13px;font-weight:600;color:#34C759;">🏠 Most Active Entities</div>
+      ${topEntities.map(([eid,count]) => `<div style="font-size:13px;color:#8E8E93;margin-top:3px;">${domainEmoji(eid)} <span style="color:#ccc">${eid}</span> — ${count} patterns</div>`).join('')}
+    </div>`;
+  }
+
+  // Day of week coverage
+  const dayCounts = {};
+  routines.forEach(r => { (r.days||[]).forEach(d => { dayCounts[d] = (dayCounts[d]||0) + 1; }); });
+  if (Object.keys(dayCounts).length) {
+    const dayOrder = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const dayBars = dayOrder.map(d => {
+      const count = dayCounts[d] || 0;
+      const max = Math.max(...Object.values(dayCounts), 1);
+      const pct = Math.round(count / max * 100);
+      return `<div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
+        <span style="width:30px;font-size:11px;color:#8E8E93;text-align:right;">${d}</span>
+        <div style="flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:rgba(0,122,255,0.5);border-radius:4px;"></div>
+        </div>
+        <span style="font-size:11px;color:#636366;width:20px;">${count}</span>
+      </div>`;
+    }).join('');
+    html += `<div style="padding:10px 14px;">
+      <div style="font-size:13px;font-weight:600;color:#FF9F0A;">📊 Weekly Pattern Distribution</div>
+      <div style="margin-top:6px;">${dayBars}</div>
+    </div>`;
+  }
+
+  // Anomaly summary
+  if (anomalies.length) {
+    const highCount = anomalies.filter(a => a.severity === 'high').length;
+    const medCount = anomalies.filter(a => a.severity === 'medium').length;
+    html += `<div style="padding:10px 14px;">
+      <div style="font-size:13px;font-weight:600;color:#FF3B30;">⚠️ Anomaly Summary</div>
+      <div style="font-size:13px;color:#8E8E93;margin-top:4px;">${anomalies.length} anomalies detected${highCount ? ` (${highCount} high severity)` : ''}${medCount ? ` (${medCount} medium)` : ''}</div>
+    </div>`;
+  }
+
+  el.innerHTML = html || '<div style="padding:20px;text-align:center;color:#636366;font-size:14px;">Not enough data for trends yet.</div>';
+}
+
+// ── Trends panel ──
+let _trendsOpen = false;
+document.getElementById('trends-toggle').addEventListener('click', () => {
+  _trendsOpen = !_trendsOpen;
+  document.getElementById('trends-panel').classList.toggle('open', _trendsOpen);
+  document.getElementById('trends-arrow').textContent = _trendsOpen ? '▼' : '▶';
+  if (_trendsOpen) renderTrends();
+});
+
+// ── Deny list panel ──
+let _denyOpen = false;
+document.getElementById('deny-toggle').addEventListener('click', () => {
+  _denyOpen = !_denyOpen;
+  document.getElementById('deny-panel').classList.toggle('open', _denyOpen);
+  document.getElementById('deny-arrow').textContent = _denyOpen ? '▼' : '▶';
+  if (_denyOpen) renderDenyPanel();
+});
+
+function renderDenyPanel() {
+  const wrap = document.getElementById('deny-panel-wrap');
+  const badge = document.getElementById('deny-badge');
+  if (!_denyList.size) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  badge.textContent = _denyList.size + ' blocked';
+  const el = document.getElementById('deny-content');
+  el.innerHTML = [..._denyList].sort().map(eid => `
+    <div class="deny-row">
+      <span style="font-size:16px;">${domainEmoji(eid)}</span>
+      <span class="deny-eid">${eid}</span>
+      <button class="undeny-btn" data-eid="${eid}">Unblock</button>
+    </div>`).join('');
+  el.querySelectorAll('.undeny-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const eid = btn.dataset.eid;
+      try {
+        await fetch(BASE + '/deny', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entity_id: eid }) });
+        _denyList.delete(eid);
+        showToast('✅ ' + eid + ' unblocked');
+        renderDenyPanel();
+      } catch { showToast('⚠️ Unblock failed'); }
+    });
+  });
+}
+
 render();
+renderDenyPanel();
 connectWS();
 </script>
 </body>
@@ -685,6 +918,9 @@ class WSServer:
         self._app.router.add_post("/analyze", self._analyze_handler)
         self._app.router.add_post("/refresh_all", self._refresh_all_handler)
         self._app.router.add_post("/save_automation", self._handle_post_save_automation)
+        self._app.router.add_post("/deny", self._deny_handler)
+        self._app.router.add_delete("/deny", self._undeny_handler)
+        self._app.router.add_get("/deny_list", self._deny_list_handler)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
         self._last_status: str = "idle"
@@ -695,9 +931,13 @@ class WSServer:
         self._analyze_cb = None
         self._refresh_all_cb = None
         self._automation_handler = None
+        self._deny_cb = None
+        self._undeny_cb = None
+        self._deny_set: set[str] = set()
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_SIZE)
         self._system_status: dict = {}
         self._patterns: dict = {}
+        self._prev_pattern_keys: set[str] = set()
         self._usage_log = None
         self._automation_builder = None
         self._ha_client = None
@@ -716,6 +956,15 @@ class WSServer:
 
     def register_automation_handler(self, handler) -> None:
         self._automation_handler = handler
+
+    def register_deny_handler(self, cb) -> None:
+        self._deny_cb = cb
+
+    def register_undeny_handler(self, cb) -> None:
+        self._undeny_cb = cb
+
+    def set_deny_list(self, deny_set: set[str]) -> None:
+        self._deny_set = deny_set
 
     def set_usage_log(self, usage_log) -> None:
         self._usage_log = usage_log
@@ -802,13 +1051,31 @@ class WSServer:
         self._known_entities = entities
 
     def set_patterns(self, patterns: dict) -> None:
+        # Compute which pattern keys are new since last push
+        new_keys = self._compute_pattern_keys(patterns)
+        new_revelations = new_keys - self._prev_pattern_keys
+        self._prev_pattern_keys = new_keys
         self._patterns = patterns
         try:
             import asyncio  # noqa: PLC0415
             loop = asyncio.get_running_loop()
-            loop.create_task(self.broadcast({"type": "patterns", "data": patterns}))
+            loop.create_task(self.broadcast({
+                "type": "patterns", "data": patterns,
+                "new_keys": list(new_revelations) if new_revelations else [],
+            }))
         except RuntimeError:
             pass
+
+    @staticmethod
+    def _compute_pattern_keys(patterns: dict) -> set[str]:
+        keys = set()
+        for r in patterns.get("routines", []):
+            keys.add("r_" + r.get("entity_id", "") + "_" + r.get("name", ""))
+        for c in patterns.get("correlations", []):
+            keys.add("c_" + c.get("entity_a", "") + "_" + c.get("entity_b", ""))
+        for a in patterns.get("anomalies", []):
+            keys.add("a_" + a.get("entity_id", ""))
+        return keys
 
     def set_system_status(self, status: dict) -> None:
         self._system_status = status
@@ -908,6 +1175,37 @@ class WSServer:
             _LOGGER.error("Inject handler error: %s", e)
             return web.json_response({"ok": False, "error": str(e)}, status=400)
 
+    async def _deny_handler(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+            entity_id = data.get("entity_id", "")
+            if not entity_id:
+                return web.json_response({"ok": False}, status=400)
+            if self._deny_cb:
+                await self._deny_cb(entity_id)
+            self._deny_set.add(entity_id)
+            await self.broadcast({"type": "deny_list", "data": sorted(self._deny_set)})
+            return web.json_response({"ok": True})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def _undeny_handler(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+            entity_id = data.get("entity_id", "")
+            if not entity_id:
+                return web.json_response({"ok": False}, status=400)
+            if self._undeny_cb:
+                await self._undeny_cb(entity_id)
+            self._deny_set.discard(entity_id)
+            await self.broadcast({"type": "deny_list", "data": sorted(self._deny_set)})
+            return web.json_response({"ok": True})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def _deny_list_handler(self, request: web.Request) -> web.Response:
+        return web.json_response(sorted(self._deny_set))
+
     async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
@@ -920,7 +1218,9 @@ class WSServer:
         if self._system_status:
             await self._send(ws, {"type": "system_status", "data": self._system_status})
         if self._patterns:
-            await self._send(ws, {"type": "patterns", "data": self._patterns})
+            await self._send(ws, {"type": "patterns", "data": self._patterns, "new_keys": []})
+        if self._deny_set:
+            await self._send(ws, {"type": "deny_list", "data": sorted(self._deny_set)})
 
         try:
             async for msg in ws:

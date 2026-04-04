@@ -73,7 +73,7 @@ class StatisticalEngine:
         self._allowed_domains = set(allowed_domains) if allowed_domains else None
         self._max_entities = max_entities
 
-    def score_realtime(self, states: dict) -> list[dict]:
+    def score_realtime(self, states: dict, deny_set: set[str] | None = None) -> list[dict]:
         """Score all actionable entities with context-aware signals. Returns sorted candidate list."""
         now = datetime.now(timezone.utc)
 
@@ -92,12 +92,14 @@ class StatisticalEngine:
         anomalies_by_eid = {a["entity_id"]: a for a in self._store.get_active_anomalies()}
 
         # Separate scenes (always included) from other entities
-        scene_eids = [eid for eid in states if eid.split(".")[0] == "scene"]
+        _deny = deny_set or set()
+        scene_eids = [eid for eid in states if eid.split(".")[0] == "scene" and eid not in _deny]
         other_eids = [
             eid for eid in states
             if eid.split(".")[0] != "scene"
             and eid.split(".")[0] in _ACTION_DOMAINS
             and (self._allowed_domains is None or eid.split(".")[0] in self._allowed_domains)
+            and eid not in _deny
         ]
 
         # Hourly-seeded random sample of non-scene entities
