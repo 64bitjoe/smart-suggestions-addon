@@ -70,7 +70,7 @@ def _compact_history(history: dict, states: dict) -> dict:
     return out
 
 
-def _build_prompt(compact: dict, states: dict, now: datetime) -> str:
+def _build_prompt(compact: dict, states: dict, now: datetime, existing_automations: list[str] | None = None) -> str:
     # Group entities by area
     by_area: dict[str, list[str]] = {}
     for eid, info in compact.items():
@@ -97,6 +97,16 @@ def _build_prompt(compact: dict, states: dict, now: datetime) -> str:
             state_lines.append(f"  {eid}: {state_val}")
     state_snapshot = "\n".join(state_lines[:150])
 
+    # Existing automations — AI should skip patterns already automated
+    auto_text = ""
+    if existing_automations:
+        auto_lines = "\n".join(f"  - {a}" for a in existing_automations[:50])
+        auto_text = f"""
+
+EXISTING AUTOMATIONS (already handled — do NOT rediscover these):
+{auto_lines}
+"""
+
     day_of_week = now.strftime("%A")
     current_time = now.strftime("%H:%M")
     return f"""Analyze this smart home entity history and extract behavioral patterns.
@@ -108,7 +118,7 @@ ENTITY HISTORY (state transitions, grouped by area):
 
 CURRENT STATE SNAPSHOT:
 {state_snapshot}
-
+{auto_text}
 Return ONLY a valid JSON object (no markdown, no explanation):
 
 {{
@@ -144,6 +154,7 @@ Return ONLY a valid JSON object (no markdown, no explanation):
 Rules:
 - Look for patterns across ALL entity domains (lights, switches, climate, locks, media, covers, fans, automations, scripts, scenes)
 - Include time-based routines for ANY entity type, not just scenes
+- SKIP patterns that are already handled by existing automations listed above — only report NEW discoveries
 - Flag "energy waste" anomalies: devices left on when area appears unoccupied
 - Flag "forgotten device" anomalies: entities active much longer than their historical average
 - Patterns with 2+ occurrences at high confidence (0.7+) or 3+ at medium confidence (0.5+)
@@ -182,7 +193,7 @@ class AnthropicAnalyzer:
         except ImportError as e:
             _LOGGER.error("Could not import AI SDK for provider %s: %s", provider, e)
 
-    async def analyze(self, history: dict, states: dict) -> dict:
+    async def analyze(self, history: dict, states: dict, existing_automations: list[str] | None = None) -> dict:
         """Run deep analysis. Returns structured pattern dict or empty on failure."""
         compact = _compact_history(history, states)
         if not compact:
@@ -194,14 +205,18 @@ class AnthropicAnalyzer:
             return {"routines": [], "correlations": [], "anomalies": []}
 
         now = datetime.now(timezone.utc)
-        prompt = _build_prompt(compact, states, now)
+        prompt = _build_prompt(compact, states, now, existing_automations)
         _LOGGER.info("AnthropicAnalyzer: analyzing %d entities with %s/%s", len(compact), self._provider, self._model)
 
         try:
             raw = await asyncio.get_running_loop().run_in_executor(
                 None, self._call_api, prompt
             )
-            return self._parse(raw)
+            parsed = self._parse(raw)
+            # Post-filter: remove patterns for entities already covered by automations
+            if existing_automations:
+                parsed = self._filter_automated(parsed, states)
+            return parsed
         except Exception as e:
             _LOGGER.warning("AnthropicAnalyzer: unexpected error (%s): %s", type(e).__name__, e)
             return {"routines": [], "correlations": [], "anomalies": []}
@@ -224,6 +239,46 @@ class AnthropicAnalyzer:
                 max_tokens=4096,
             )
             return response.choices[0].message.content
+
+    @staticmethod
+    def _filter_automated(parsed: dict, states: dict) -> dict:
+        """Remove patterns whose entities are already targets of existing automations."""
+        # Build set of entity_ids that appear in automation action configs
+        automated_eids: set[str] = set()
+        for eid, s in states.items():
+            if not eid.startswith("automation."):
+                continue
+            # HA stores automation entity_ids in the action targets
+            attrs = s.get("attributes", {})
+            entity_id_attr = attrs.get("entity_id")
+            if isinstance(entity_id_attr, list):
+                automated_eids.update(entity_id_attr)
+            elif isinstance(entity_id_attr, str) and entity_id_attr:
+                automated_eids.add(entity_id_attr)
+            # Also check friendly_name for keyword matching
+            friendly = (attrs.get("friendly_name", "") or "").lower()
+            # Look through all routines/correlations for entity matches
+            for key in ("last_triggered",):
+                pass  # just need the entity_id targets above
+
+        if not automated_eids:
+            return parsed
+
+        before_r = len(parsed.get("routines", []))
+        before_c = len(parsed.get("correlations", []))
+        parsed["routines"] = [
+            r for r in parsed.get("routines", [])
+            if r.get("entity_id") not in automated_eids
+        ]
+        parsed["correlations"] = [
+            c for c in parsed.get("correlations", [])
+            if c.get("entity_b") not in automated_eids
+        ]
+        filtered_r = before_r - len(parsed["routines"])
+        filtered_c = before_c - len(parsed["correlations"])
+        if filtered_r or filtered_c:
+            _LOGGER.info("Filtered %d routines, %d correlations already handled by automations", filtered_r, filtered_c)
+        return parsed
 
     def _parse(self, raw: str) -> dict:
         try:

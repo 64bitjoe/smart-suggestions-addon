@@ -296,7 +296,8 @@ class SmartSuggestionsAddon:
             return
         try:
             history = await self._ha.fetch_history(self._opts.get("analysis_depth_days", 7) * 24)
-            patterns = await self._analyzer.analyze(history, self._last_states)
+            existing_automations = await self._ha.get_automations() if self._ha else []
+            patterns = await self._analyzer.analyze(history, self._last_states, existing_automations)
             if any(patterns.values()):
                 self._pattern_store.merge(patterns)
                 self._push_stored_patterns()
