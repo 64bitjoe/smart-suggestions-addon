@@ -125,26 +125,26 @@ class StatisticalEngine:
             reason_parts = []
 
             # --- Context-aware base scoring (all domains) ---
-            # Time-of-day relevance
+            name_str = state.get("attributes", {}).get("friendly_name", eid)
             hour = now.hour
-            if domain in ("light", "switch", "fan") and (hour >= 17 or hour < 6):
-                score += 8
-                reason_parts.append("evening/night — good time to adjust lighting")
-            elif domain == "climate" and (hour >= 22 or hour < 7):
-                score += 6
-                reason_parts.append("overnight — consider adjusting climate")
-            elif domain == "media_player" and 17 <= hour <= 23:
-                score += 5
-                reason_parts.append("evening — prime media time")
+
+            # Time-of-day relevance — only score if entity is in a state worth acting on
+            if domain in ("light", "switch", "fan") and (hour >= 17 or hour < 6) and s == "off":
+                score += 4  # mild boost, not dominant
+            elif domain == "climate" and (hour >= 22 or hour < 7) and s not in _INACTIVE_STATES:
+                score += 4
 
             # Weather-aware scoring
             if weather_temp is not None:
                 if domain == "cover" and s == "open" and weather_temp < 45:
                     score += 18
-                    reason_parts.append(f"open while it's {weather_temp}°F outside — close to save energy")
+                    reason_parts.append(f"{name_str} is open but it's {weather_temp}° outside")
                 elif domain == "climate" and "cool" in s and weather_temp < 50:
                     score += 15
-                    reason_parts.append(f"cooling while it's only {weather_temp}°F outside")
+                    reason_parts.append(f"{name_str} is cooling but it's only {weather_temp}° outside — save energy")
+                elif domain in ("light", "switch") and s == "on" and weather_temp is not None:
+                    # Check if it's daytime and sunny — lights might be unnecessary
+                    pass  # handled by stale check above
 
             # Recently changed boost (entity changed in last 60 min)
             last_changed_str = state.get("last_changed", "")
@@ -164,22 +164,25 @@ class StatisticalEngine:
                 try:
                     last_changed = datetime.fromisoformat(last_changed_str.replace("Z", "+00:00"))
                     hours_active = (now - last_changed).total_seconds() / 3600
+                    since_time = last_changed.strftime("%I:%M %p").lstrip("0")
                     if domain in ("light", "switch", "fan") and hours_active >= 8:
                         score += 12
-                        reason_parts.append(f"on for {int(hours_active)}h — may have been forgotten")
+                        reason_parts.append(f"{name_str} has been {s} since {since_time} ({int(hours_active)}h)")
                     elif domain == "lock" and s == "unlocked" and hours_active >= 4:
                         score += 15
-                        reason_parts.append(f"unlocked for {int(hours_active)}h")
+                        reason_parts.append(f"{name_str} unlocked since {since_time} ({int(hours_active)}h)")
                     elif domain == "cover" and s == "open" and hours_active >= 6:
                         score += 10
-                        reason_parts.append(f"open for {int(hours_active)}h")
+                        reason_parts.append(f"{name_str} open since {since_time} ({int(hours_active)}h)")
+                    elif domain == "media_player" and s == "playing" and hours_active >= 4:
+                        score += 8
+                        reason_parts.append(f"{name_str} playing since {since_time} ({int(hours_active)}h)")
                 except (ValueError, TypeError):
                     pass
 
             # Device error detection
             if s == "error" and domain in ("vacuum", "climate", "fan"):
                 score += 20
-                name_str = state.get("attributes", {}).get("friendly_name", eid)
                 reason_parts.append(f"{name_str} is in error state — needs attention")
 
             # Scene-specific scoring
@@ -195,7 +198,7 @@ class StatisticalEngine:
                 routine_match, boost = _routine_matches_now(routine, now)
                 if routine_match:
                     score += boost
-                    reason_parts.append(f"you usually do this around {routine.get('typical_time')} on {routine.get('days', [])}")
+                    reason_parts.append(f"usually {s if s in _INACTIVE_STATES else 'changed'} around {routine.get('typical_time')} but hasn't been today")
 
             # Anomaly boost
             if eid in anomalies_by_eid:
@@ -206,17 +209,18 @@ class StatisticalEngine:
             # Active correlation boost — if entity_a is active, boost entity_b
             for corr in correlations:
                 if corr.get("entity_b") == eid:
-                    entity_a_state = states.get(corr.get("entity_a", ""), {}).get("state", "")
+                    entity_a = corr.get("entity_a", "")
+                    entity_a_state = states.get(entity_a, {}).get("state", "")
                     if entity_a_state not in _INACTIVE_STATES and entity_a_state not in ("unavailable", "unknown", ""):
+                        entity_a_name = states.get(entity_a, {}).get("attributes", {}).get("friendly_name", entity_a)
                         score += corr.get("confidence", 0.5) * 20
-                        reason_parts.append(corr.get("pattern", "correlated with active device"))
+                        reason_parts.append(f"{entity_a_name} is {entity_a_state} — these usually go together")
 
             # Only include entities with some signal
             if score > 0:
-                name = state.get("attributes", {}).get("friendly_name", eid)
                 candidates.append({
                     "entity_id": eid,
-                    "name": name,
+                    "name": name_str,
                     "domain": domain,
                     "type": "scene" if domain == "scene" else (
                         "automation" if domain == "automation" else

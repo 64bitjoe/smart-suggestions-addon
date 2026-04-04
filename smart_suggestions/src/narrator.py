@@ -46,7 +46,14 @@ def _build_prompt(candidates: list[dict], context: dict | None = None) -> str:
     context_block = "\n".join(context_lines) if context_lines else "No additional context."
 
     input_json = json.dumps([
-        {"entity_id": c["entity_id"], "name": c["name"], "type": c.get("type"), "reason": c.get("reason", "")}
+        {
+            "entity_id": c["entity_id"],
+            "name": c["name"],
+            "type": c.get("type"),
+            "current_state": c.get("current_state", ""),
+            "action": c.get("action", ""),
+            "reason": c.get("reason", ""),
+        }
         for c in candidates
     ], indent=2)
 
@@ -58,7 +65,7 @@ def _build_prompt(candidates: list[dict], context: dict | None = None) -> str:
 
     entity_context = "\n".join(entity_context_lines) if entity_context_lines else ""
 
-    return f"""You are a smart home assistant. Given the current context, rank these suggestions by how useful they are RIGHT NOW.
+    return f"""You are a smart home advisor. Your job is to identify actionable, non-obvious suggestions — things that are connected but NOT currently automated.
 
 TIME: {now_str}
 
@@ -66,13 +73,21 @@ TIME: {now_str}
 
 {entity_context}
 
-CANDIDATE SUGGESTIONS (reorder by relevance, rewrite reasons to be specific and helpful):
+CANDIDATES (each has current_state and proposed action):
 {input_json}
 
 Instructions:
-1. Put the most useful-right-now suggestions first. Consider time of day, what's currently on/off, weather, and occupancy.
-2. Rewrite each 'reason' to be conversational and specific — explain WHY this action makes sense right now (one sentence).
-3. Prioritize diversity: mix different entity types (lights, climate, locks, media, scenes) rather than clustering one type.
+1. RANK by how actionable and non-obvious each suggestion is RIGHT NOW. Prioritize:
+   - Devices that seem forgotten or wasteful (lights left on, locks unlocked, covers open in bad weather)
+   - Things that work together but aren't automated (e.g. "living room lights are on but TV is off — if you're done watching, turn off the lights too")
+   - Anomalies: something is in an unusual state for this time of day
+   - Correlations: entity A changed recently, entity B usually follows but hasn't yet
+2. DE-PRIORITIZE generic time-of-day suggestions ("it's evening, adjust lights"). Only mention time if it reveals something specific and actionable.
+3. Rewrite each 'reason' as a SHORT, specific sentence explaining the concrete situation:
+   - BAD: "It's evening — good time to adjust lighting"
+   - GOOD: "Kitchen lights have been on for 6 hours with no motion since 2pm"
+   - BAD: "Consider adjusting climate"
+   - GOOD: "AC is cooling to 68° but it's only 52° outside — open windows instead?"
 4. Do NOT suggest anything in "Already automated" or "User has dismissed".
 5. Return ONLY a valid JSON array (no markdown):
 [{{"entity_id": "...", "reason": "..."}}]"""
