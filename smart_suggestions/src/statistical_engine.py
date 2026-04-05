@@ -206,7 +206,8 @@ class StatisticalEngine:
                 score += 15
                 reason_parts.append(anomaly.get("description", "unusual state"))
 
-            # Active correlation boost — if entity_a is active, boost entity_b
+            # Active correlation boost — if entity_a is active, boost entity_b (max 2)
+            corr_names = []
             for corr in correlations:
                 if corr.get("entity_b") == eid:
                     entity_a = corr.get("entity_a", "")
@@ -214,7 +215,12 @@ class StatisticalEngine:
                     if entity_a_state not in _INACTIVE_STATES and entity_a_state not in ("unavailable", "unknown", ""):
                         entity_a_name = states.get(entity_a, {}).get("attributes", {}).get("friendly_name", entity_a)
                         score += corr.get("confidence", 0.5) * 20
-                        reason_parts.append(f"{entity_a_name} is {entity_a_state} — these usually go together")
+                        corr_names.append(entity_a_name)
+            if corr_names:
+                shown = corr_names[:2]
+                extra = len(corr_names) - len(shown)
+                names_str = " & ".join(shown) + (f" +{extra} more" if extra else "")
+                reason_parts.append(f"linked to {names_str} (currently active)")
 
             # Only include entities with some signal
             if score > 0:
@@ -230,7 +236,7 @@ class StatisticalEngine:
                     "score": round(score, 1),
                     "match_ratio": match_ratio,
                     "routine_match": routine_match,
-                    "reason": "; ".join(reason_parts) if reason_parts else "",
+                    "reason": "; ".join(reason_parts[:2]) if reason_parts else "",
                     "can_save_as_automation": (
                         routine_match
                         and eid in routines_by_eid
