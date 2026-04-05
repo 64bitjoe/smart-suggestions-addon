@@ -155,28 +155,26 @@ class StatisticalEngine:
                     if 0 < minutes_ago <= 60:
                         recency_boost = max(0, 15 * (1 - minutes_ago / 60))
                         score += round(recency_boost, 1)
-                        reason_parts.append(f"changed {int(minutes_ago)}m ago")
                 except (ValueError, TypeError):
                     pass
 
-            # Stale active anomaly (entity active for unusually long)
+            # Stale active anomaly — only flag if it's likely forgotten
             if s not in _INACTIVE_STATES and last_changed_str:
                 try:
                     last_changed = datetime.fromisoformat(last_changed_str.replace("Z", "+00:00"))
                     hours_active = (now - last_changed).total_seconds() / 3600
-                    since_time = last_changed.strftime("%I:%M %p").lstrip("0")
                     if domain in ("light", "switch", "fan") and hours_active >= 8:
                         score += 12
-                        reason_parts.append(f"{name_str} has been {s} since {since_time} ({int(hours_active)}h)")
+                        reason_parts.append("possibly forgotten — still on")
                     elif domain == "lock" and s == "unlocked" and hours_active >= 4:
                         score += 15
-                        reason_parts.append(f"{name_str} unlocked since {since_time} ({int(hours_active)}h)")
+                        reason_parts.append("left unlocked — should this be locked?")
                     elif domain == "cover" and s == "open" and hours_active >= 6:
                         score += 10
-                        reason_parts.append(f"{name_str} open since {since_time} ({int(hours_active)}h)")
+                        reason_parts.append("left open — close it?")
                     elif domain == "media_player" and s == "playing" and hours_active >= 4:
                         score += 8
-                        reason_parts.append(f"{name_str} playing since {since_time} ({int(hours_active)}h)")
+                        reason_parts.append("still playing — anyone listening?")
                 except (ValueError, TypeError):
                     pass
 
