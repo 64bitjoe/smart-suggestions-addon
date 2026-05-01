@@ -3,8 +3,6 @@ import aiosqlite
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator, Iterable
-
 
 @dataclass(frozen=True)
 class StateChange:
@@ -58,8 +56,14 @@ class DbReader:
         """
         params: list = [since_ts]
         if entity_id_prefix:
-            sql += " AND m.entity_id LIKE ?"
-            params.append(f"{entity_id_prefix}%")
+            sql += " AND m.entity_id LIKE ? ESCAPE '\\'"
+            escaped = (
+                entity_id_prefix
+                .replace("\\", "\\\\")  # escape literal backslashes first
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            params.append(f"{escaped}%")
         sql += " ORDER BY s.last_updated_ts ASC"
 
         async with aiosqlite.connect(self.sqlite_path) as db:

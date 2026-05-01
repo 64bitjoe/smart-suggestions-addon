@@ -1,6 +1,6 @@
 import aiosqlite
 import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from db_reader import DbReader, StateChange
 
 
@@ -53,7 +53,7 @@ async def test_get_state_changes_for_entity_respects_since(fake_db):
     reader = DbReader(sqlite_path=fake_db)
     since = datetime(2026, 5, 3, 12, 0, 0, tzinfo=timezone.utc)  # after first 2 days
     changes = await reader.get_state_changes_for_entity("light.kitchen", since)
-    assert 4 <= len(changes) <= 6  # last 2-3 days
+    assert len(changes) == 4
 
 
 async def test_get_all_state_changes_filters_by_prefix(fake_db):
@@ -62,3 +62,14 @@ async def test_get_all_state_changes_filters_by_prefix(fake_db):
     changes = await reader.get_all_state_changes(since, entity_id_prefix="light.")
     assert len(changes) == 10  # only kitchen has data; living_room has none
     assert all(c.entity_id.startswith("light.") for c in changes)
+
+
+async def test_get_all_state_changes_without_prefix_returns_all(fake_db):
+    reader = DbReader(sqlite_path=fake_db)
+    since = datetime(2026, 4, 25, tzinfo=timezone.utc)
+    changes = await reader.get_all_state_changes(since)
+    assert len(changes) == 10
+    assert all(c.entity_id == "light.kitchen" for c in changes)
+    # Confirm chronological ordering
+    timestamps = [c.ts for c in changes]
+    assert timestamps == sorted(timestamps)
