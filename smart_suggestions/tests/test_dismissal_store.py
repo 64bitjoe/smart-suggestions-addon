@@ -32,3 +32,12 @@ async def test_dismissals_per_miner_in_window(store):
     count = await store.dismissals_per_miner_in_window(MinerType.TEMPORAL, timedelta(days=7))
     assert count == 3
     assert await store.dismissals_per_miner_in_window(MinerType.SEQUENCE, timedelta(days=7)) == 1
+
+
+async def test_methods_work_without_explicit_init(tmp_path):
+    """Caller forgot to call init() — store should self-initialize on first use."""
+    s = DismissalStore(db_path=tmp_path / "auto_init.db")
+    # Note: NO await s.init()
+    sig = "temporal:auto.init:turn_on:xyz"
+    await s.add_dismissal(sig, MinerType.TEMPORAL, datetime.now(timezone.utc))
+    assert await s.is_dismissed(sig, within=timedelta(days=1))

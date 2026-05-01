@@ -8,10 +8,13 @@ from candidate import MinerType
 class DismissalStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
+        self._initialized = False
 
     async def init(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
+            # TODO: add periodic pruning of rows older than ~90 days; see Task 11 (main.py
+            # scheduler) for the natural integration point.
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS dismissals (
                     signature TEXT NOT NULL,
@@ -22,8 +25,14 @@ class DismissalStore:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_sig ON dismissals(signature)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_miner_ts ON dismissals(miner_type, dismissed_at)")
             await db.commit()
+        self._initialized = True
+
+    async def _ensure_initialized(self):
+        if not self._initialized:
+            await self.init()
 
     async def add_dismissal(self, signature: str, miner_type: MinerType, when: datetime):
+        await self._ensure_initialized()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO dismissals (signature, miner_type, dismissed_at) VALUES (?, ?, ?)",
@@ -32,6 +41,7 @@ class DismissalStore:
             await db.commit()
 
     async def is_dismissed(self, signature: str, within: timedelta) -> bool:
+        await self._ensure_initialized()
         cutoff = (datetime.now(timezone.utc) - within).timestamp()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
@@ -43,6 +53,7 @@ class DismissalStore:
     async def dismissals_per_miner_in_window(
         self, miner_type: MinerType, window: timedelta
     ) -> int:
+        await self._ensure_initialized()
         cutoff = (datetime.now(timezone.utc) - window).timestamp()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
