@@ -26,7 +26,6 @@ class TemporalMiner:
         """Mine temporal routine candidates from state-change history.
 
         `now` is reserved for recency-decay weighting (not implemented in v1).
-        Kept in the signature so all four miners share a uniform interface.
         """
         # Group: (entity_id, action) -> list of datetime
         buckets: dict[tuple[str, str], list[datetime]] = defaultdict(list)

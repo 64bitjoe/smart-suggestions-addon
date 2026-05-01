@@ -16,6 +16,8 @@ class SequenceMiner:
         Considers only 'on' transitions in v1. For each A 'on' event, looks at
         the next ≤ DELTA_SECONDS seconds for distinct entities B that also
         turned on. Conditional probability P(B|A) = follows_with(A,B) / count(A on).
+
+        NOTE: v1 uses P(B|A) only; lift (P(B|A)/P(B)) is not computed.
         """
         if not changes:
             return []
