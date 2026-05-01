@@ -24,12 +24,15 @@ def _is_arrival(state: str) -> bool:
     return state in {"home", "on"}
 
 
+_NOISE_STATES = {"unavailable", "unknown", "none", "None"}
+
+
 def _latency_bucket(seconds: float) -> str:
+    """Bucket the average arrival-to-action latency. Window is bounded to 5 min by WINDOW_MINUTES."""
+    assert seconds <= WINDOW_MINUTES * 60, f"latency {seconds}s exceeds window"
     if seconds <= 120:
         return "0-2m"
-    if seconds <= 300:
-        return "2-5m"
-    return ">5m"
+    return "2-5m"
 
 
 class CrossAreaMiner:
@@ -60,14 +63,17 @@ class CrossAreaMiner:
             seen: set[tuple[str, str]] = set()
             while j < len(ordered) and (ordered[j].ts - t.ts).total_seconds() <= WINDOW_MINUTES * 60:
                 target = ordered[j]
-                if not _is_presence(target.entity_id):
-                    key = (target.entity_id, target.state)
-                    if key not in seen:
-                        co[(t.entity_id, target.entity_id, target.state)].append(
-                            (target.ts - t.ts).total_seconds()
-                        )
-                        seen.add(key)
                 j += 1
+                if _is_presence(target.entity_id):
+                    continue
+                if target.state in _NOISE_STATES:
+                    continue
+                key = (target.entity_id, target.state)
+                if key not in seen:
+                    co[(t.entity_id, target.entity_id, target.state)].append(
+                        (target.ts - t.ts).total_seconds()
+                    )
+                    seen.add(key)
 
         candidates: list[Candidate] = []
         for (trig, tgt_entity, tgt_state), latencies in co.items():

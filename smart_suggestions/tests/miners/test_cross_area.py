@@ -38,3 +38,17 @@ async def test_ignores_presence_to_presence_pairs():
     miner = CrossAreaMiner()
     candidates = await miner.run(changes)
     assert candidates == []
+
+
+async def test_ignores_unavailable_target_states():
+    """A target that bounces to 'unavailable' within the window should not produce a candidate."""
+    base = datetime(2026, 4, 1, 17, 30, 0, tzinfo=timezone.utc)
+    changes = []
+    for d in range(7):
+        t = base + timedelta(days=d)
+        changes.append(StateChange("person.joe", "home", t))
+        changes.append(StateChange("climate.office", "unavailable", t + timedelta(seconds=30)))
+    miner = CrossAreaMiner()
+    candidates = await miner.run(changes)
+    matching = [c for c in candidates if c.entity_id == "climate.office"]
+    assert matching == []
