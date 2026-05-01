@@ -23,7 +23,7 @@ async def test_finds_morning_routine_with_tight_cluster():
     assert c.entity_id == "light.kitchen"
     assert c.action == "turn_on"
     assert c.details["hour"] == 6
-    assert 30 <= c.details["minute"] <= 60  # cluster center near 45
+    assert 43 <= c.details["minute"] <= 47  # cluster center near 45
     assert c.occurrences >= 5
     assert c.conditional_prob >= 0.7
 

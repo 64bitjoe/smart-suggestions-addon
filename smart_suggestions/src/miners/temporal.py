@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from candidate import Candidate, MinerType
 from db_reader import StateChange
 
@@ -23,6 +23,11 @@ class TemporalMiner:
     async def run(
         self, changes: list[StateChange], now: datetime
     ) -> list[Candidate]:
+        """Mine temporal routine candidates from state-change history.
+
+        `now` is reserved for recency-decay weighting (not implemented in v1).
+        Kept in the signature so all four miners share a uniform interface.
+        """
         # Group: (entity_id, action) -> list of datetime
         buckets: dict[tuple[str, str], list[datetime]] = defaultdict(list)
         for c in changes:
@@ -33,13 +38,16 @@ class TemporalMiner:
 
         candidates: list[Candidate] = []
         for (entity_id, action), timestamps in buckets.items():
-            cluster = self._find_tightest_cluster(timestamps)
+            cluster = self._find_densest_cluster(timestamps)
             if cluster is None:
                 continue
             cluster_count, center_minute_of_day, weekdays = cluster
             total_for_action = len(timestamps)
+            # NOTE: We emit at most one candidate per (entity, action). An entity with
+            # two equally-strong routines (e.g. morning on + evening on) splits the
+            # probability and may be rejected. v1 limitation.
             cond_prob = cluster_count / total_for_action if total_for_action else 0
-            if cluster_count < MIN_OCCURRENCES or cond_prob < MIN_CONDITIONAL_PROB:
+            if cond_prob < MIN_CONDITIONAL_PROB:
                 continue
             candidates.append(
                 Candidate(
@@ -57,10 +65,12 @@ class TemporalMiner:
             )
         return candidates
 
-    def _find_tightest_cluster(
+    def _find_densest_cluster(
         self, timestamps: list[datetime]
     ) -> tuple[int, int, set[int]] | None:
-        """Sliding-window cluster on minute-of-day. Returns (count, center, weekdays_set) or None."""
+        """Returns the maximum-count cluster within a 2*CLUSTER_WIDTH_MINUTES span. Ties broken by leftmost position.
+
+        Returns (count, center, weekdays_set) or None."""
         if len(timestamps) < MIN_OCCURRENCES:
             return None
         minutes_of_day = sorted((t.hour * 60 + t.minute, t.weekday()) for t in timestamps)
