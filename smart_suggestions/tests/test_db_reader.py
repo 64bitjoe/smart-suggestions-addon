@@ -73,3 +73,14 @@ async def test_get_all_state_changes_without_prefix_returns_all(fake_db):
     # Confirm chronological ordering
     timestamps = [c.ts for c in changes]
     assert timestamps == sorted(timestamps)
+
+
+def test_db_reader_accepts_db_url():
+    reader = DbReader(db_url="sqlite+aiosqlite:///tmp/test.db")
+    assert reader.db_url == "sqlite+aiosqlite:///tmp/test.db"
+    assert reader.sqlite_path is None
+
+
+def test_db_reader_requires_one_of_path_or_url():
+    with pytest.raises(ValueError, match="must provide"):
+        DbReader()
