@@ -84,3 +84,8 @@ def test_db_reader_accepts_db_url():
 def test_db_reader_requires_one_of_path_or_url():
     with pytest.raises(ValueError, match="must provide"):
         DbReader()
+
+
+def test_db_reader_rejects_both_path_and_url():
+    with pytest.raises(ValueError, match="not both"):
+        DbReader(sqlite_path="/tmp/x.db", db_url="sqlite+aiosqlite:///tmp/y.db")

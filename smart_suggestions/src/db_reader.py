@@ -24,6 +24,8 @@ class DbReader:
         sqlite_path: str | Path | None = None,
         db_url: str | None = None,
     ):
+        if sqlite_path and db_url:
+            raise ValueError("DbReader accepts sqlite_path or db_url, not both")
         if not (sqlite_path or db_url):
             raise ValueError("DbReader must provide one of sqlite_path or db_url")
         self.sqlite_path = Path(sqlite_path) if sqlite_path else None
@@ -40,7 +42,7 @@ class DbReader:
         try:
             async with engine.connect() as conn:
                 result = await conn.execute(text(sql), params)
-                return [dict(row._mapping) for row in result]
+                return [dict(row) for row in result.mappings()]
         finally:
             await engine.dispose()
 
