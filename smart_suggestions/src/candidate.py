@@ -30,7 +30,9 @@ class Candidate:
     action: str
     details: dict[str, Any] = field(default_factory=dict)
     occurrences: int = 0
+    # Set by miners. P(action | trigger) — the raw conditional probability the miner measured.
     conditional_prob: float = 0.0
+    # Set by CandidateFilter after multi-criteria gating. Reserved for future use.
     confidence: float = 0.0
 
     def signature(self) -> str:
@@ -41,9 +43,14 @@ class Candidate:
         The detail values for the miner's identity keys are included in the
         human-readable prefix so callers can inspect the pattern from the key
         alone (e.g. for logging or dismissal matching). Lists are sorted and
-        joined with '-' for stability. The SHA1 digest is computed over the
-        full identity payload (sort_keys=True) so key-order differences in
-        `details` produce the same signature.
+        joined with '-' for stability. The SHA1 digest at the tail is computed
+        over the full canonical-JSON identity payload, so dict-key order
+        differences in `details` produce the same signature.
+
+        CONTRACT: Treat the signature as an opaque key. Do not split or parse
+        it — entity IDs and detail values may contain ':' or '-' separators in
+        the future. Equality comparison and substring search are safe; structural
+        parsing is not.
         """
         keys = _SIG_KEYS.get(self.miner_type, ())
         identity = {k: self.details.get(k) for k in keys}
@@ -58,11 +65,14 @@ class Candidate:
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha1(blob.encode()).hexdigest()[:16]
-        detail_parts = ":".join(
-            "-".join(str(x) for x in v) if isinstance(v, list) else str(v)
-            for k in keys
-            for v in [identity[k]]
-        )
+        detail_parts_list = []
+        for k in keys:
+            v = identity[k]
+            if isinstance(v, list):
+                detail_parts_list.append("-".join(str(x) for x in v))
+            else:
+                detail_parts_list.append(str(v))
+        detail_parts = ":".join(detail_parts_list)
         prefix = f"{self.miner_type.value}:{self.entity_id}:{self.action}"
         if detail_parts:
             prefix = f"{prefix}:{detail_parts}"
