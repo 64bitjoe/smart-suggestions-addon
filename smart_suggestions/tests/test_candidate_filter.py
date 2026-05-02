@@ -1,5 +1,4 @@
 import pytest
-from datetime import timedelta
 from candidate import Candidate, MinerType
 from candidate_filter import CandidateFilter
 
@@ -106,3 +105,34 @@ async def test_waste_still_subject_to_already_automated():
     )
     out = await f.filter([_waste("light.garage")])
     assert out == []
+
+
+async def test_threshold_bump_caps_at_max():
+    """Many dismissals (e.g. 30 → 10 bumps × 0.05 = 0.5) should cap at 0.9, not exceed it."""
+    store = FakeDismissalStore()
+    store.dismissals_by_miner[MinerType.TEMPORAL] = 30
+    f = CandidateFilter(automated_entities=set(), dismissal_store=store)
+    # A candidate at 0.89 should fail (cap is 0.9), a candidate at 0.91 should pass.
+    fails = _temporal("light.fails", prob=0.89)
+    passes = _temporal("light.passes", prob=0.91)
+    out = await f.filter([fails, passes])
+    assert [c.entity_id for c in out] == ["light.passes"]
+
+
+async def test_threshold_bump_two_steps():
+    """6 dismissals → 2 bumps → threshold 0.80."""
+    store = FakeDismissalStore()
+    store.dismissals_by_miner[MinerType.TEMPORAL] = 6
+    f = CandidateFilter(automated_entities=set(), dismissal_store=store)
+    borderline = _temporal("light.borderline", prob=0.79)  # passes 0.75 (1 bump), fails 0.80 (2 bumps)
+    out = await f.filter([borderline])
+    assert out == []
+
+
+def test_constructor_rejects_min_prob_above_cap():
+    with pytest.raises(ValueError, match="must be <="):
+        CandidateFilter(
+            automated_entities=set(),
+            dismissal_store=FakeDismissalStore(),
+            min_conditional_prob=0.95,  # > MAX_THRESHOLD
+        )

@@ -23,6 +23,10 @@ class CandidateFilter:
         min_occurrences: int = DEFAULT_MIN_OCCURRENCES,
         min_conditional_prob: float = DEFAULT_MIN_CONDITIONAL_PROB,
     ):
+        if min_conditional_prob > MAX_THRESHOLD:
+            raise ValueError(
+                f"min_conditional_prob ({min_conditional_prob}) must be <= MAX_THRESHOLD ({MAX_THRESHOLD})"
+            )
         self.automated_entities = automated_entities
         self.dismissal_store = dismissal_store
         self.min_occurrences = min_occurrences
