@@ -17,6 +17,14 @@ from automation_builder import AutomationBuilder
 from ha_client import HAClient
 from usage_log import UsageLog
 from ws_server import WSServer
+from db_reader import DbReader
+from dismissal_store import DismissalStore
+from candidate_filter import CandidateFilter
+from llm_describer import LlmDescriber
+from miners.temporal import TemporalMiner
+from miners.sequence import SequenceMiner
+from miners.cross_area import CrossAreaMiner
+from miners.waste import WasteDetector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +35,119 @@ _LOGGER = logging.getLogger("smart_suggestions")
 _OPTIONS_FILE = "/data/options.json"
 _FEEDBACK_FILE = "/data/feedback.json"
 _DENY_LIST_FILE = "/data/deny_list.json"
+
+# Shared state between hourly mining loop and 5-minute waste loop.
+_pipeline_state: dict = {"last_suggestion_zone": [], "last_noticed_zone": []}
+
+
+async def mine_and_emit_suggestions(
+    db_reader: DbReader,
+    dismissal_store: DismissalStore,
+    llm_describer: LlmDescriber,
+    ha_client: HAClient,
+    state: dict,
+    history_window_days: int = 30,
+) -> None:
+    """Run all four miners, filter, describe, and write suggestions."""
+    since = datetime.now(timezone.utc) - timedelta(days=history_window_days)
+    all_changes = await db_reader.get_all_state_changes(since)
+
+    temporal = await TemporalMiner().run(all_changes, now=datetime.now(timezone.utc))
+    sequence = await SequenceMiner().run(all_changes)
+    cross = await CrossAreaMiner().run(all_changes)
+    candidates = list(temporal) + list(sequence) + list(cross)
+
+    automated_entities = await ha_client.get_automated_entities()
+    filt = CandidateFilter(automated_entities=automated_entities, dismissal_store=dismissal_store)
+    survivors = await filt.filter(candidates)
+
+    suggestions = []
+    for c in survivors:
+        desc = await llm_describer.describe(c)
+        suggestions.append({
+            "miner_type": c.miner_type.value,
+            "entity_id": c.entity_id,
+            "action": c.action,
+            "title": desc.title,
+            "description": desc.description,
+            "automation_yaml": desc.automation_yaml,
+            "confidence": c.conditional_prob,
+            "signature": c.signature(),
+            "zone": "suggestion",
+        })
+    state["last_suggestion_zone"] = suggestions
+
+    combined = state["last_suggestion_zone"] + state.get("last_noticed_zone", [])
+    await ha_client.write_suggestions(combined)
+
+
+async def mine_and_emit_waste_only(
+    db_reader: DbReader,
+    dismissal_store: DismissalStore,
+    llm_describer: LlmDescriber,
+    ha_client: HAClient,
+    state: dict,
+) -> None:
+    """5-minute waste-only check; refreshes only the noticed zone."""
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    history = await db_reader.get_all_state_changes(since)
+    current = await ha_client.get_current_on_states()
+    waste = await WasteDetector().run(history, current, datetime.now(timezone.utc))
+
+    automated = await ha_client.get_automated_entities()
+    filt = CandidateFilter(automated_entities=automated, dismissal_store=dismissal_store)
+    survivors = await filt.filter(waste)
+
+    noticed = []
+    for c in survivors:
+        desc = await llm_describer.describe(c)
+        noticed.append({
+            "miner_type": c.miner_type.value,
+            "entity_id": c.entity_id,
+            "action": c.action,
+            "title": desc.title,
+            "description": desc.description,
+            "automation_yaml": desc.automation_yaml,
+            "confidence": c.conditional_prob,
+            "signature": c.signature(),
+            "zone": "noticed",
+        })
+    state["last_noticed_zone"] = noticed
+
+    combined = state.get("last_suggestion_zone", []) + state["last_noticed_zone"]
+    await ha_client.write_suggestions(combined)
+
+
+async def hourly_mining_loop(
+    db_reader: DbReader,
+    dismissal_store: DismissalStore,
+    llm_describer: LlmDescriber,
+    ha_client: HAClient,
+) -> None:
+    while True:
+        try:
+            await mine_and_emit_suggestions(
+                db_reader, dismissal_store, llm_describer, ha_client, _pipeline_state
+            )
+        except Exception:
+            _LOGGER.exception("hourly mining failed")
+        await asyncio.sleep(3600)
+
+
+async def waste_check_loop(
+    db_reader: DbReader,
+    dismissal_store: DismissalStore,
+    llm_describer: LlmDescriber,
+    ha_client: HAClient,
+) -> None:
+    while True:
+        try:
+            await mine_and_emit_waste_only(
+                db_reader, dismissal_store, llm_describer, ha_client, _pipeline_state
+            )
+        except Exception:
+            _LOGGER.exception("waste check failed")
+        await asyncio.sleep(300)
 
 
 def _load_options() -> dict:
@@ -444,6 +565,22 @@ class SmartSuggestionsAddon:
 
         loop.create_task(self._correlation_loop())
         loop.create_task(self._nightly_analysis_scheduler())
+
+        # ── New pattern-mining pipeline (runs alongside old paths until Task 12 removes them) ──
+        import anthropic as _anthropic
+        _db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
+        _dismissal_store = DismissalStore(db_path="/data/dismissals.db")
+        _anthropic_client = _anthropic.AsyncAnthropic(
+            api_key=self._opts.get("ai_api_key", "")
+        )
+        _llm_describer = LlmDescriber(
+            client=_anthropic_client,
+            cache_path="/data/llm_cache.db",
+            model=self._opts.get("ai_model", "claude-haiku-4-5-20251001"),
+        )
+        loop.create_task(hourly_mining_loop(_db_reader, _dismissal_store, _llm_describer, self._ha))
+        loop.create_task(waste_check_loop(_db_reader, _dismissal_store, _llm_describer, self._ha))
+
         await self._ha.start()  # blocks forever — keeps event loop alive
 
     async def _shutdown(self) -> None:

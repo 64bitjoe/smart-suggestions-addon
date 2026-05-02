@@ -293,6 +293,50 @@ class HAClient:
             _LOGGER.warning("get_automations failed: %s", e)
             return []
 
+    async def get_states(self) -> list[dict]:
+        """Return the raw list of all entity state dicts from /api/states."""
+        return await self._api_get("/states")
+
+    async def get_current_on_states(self) -> dict[str, tuple[str, datetime]]:
+        """Return {entity_id: (state, last_changed_dt)} for entities currently in an active state.
+
+        Active states: on, heat, cool, heat_cool, fan_only, auto.
+        """
+        states = await self.get_states()
+        active = {"on", "heat", "cool", "heat_cool", "fan_only", "auto"}
+        out: dict[str, tuple[str, datetime]] = {}
+        for s in states:
+            if s.get("state") in active:
+                last = s.get("last_changed")
+                if last:
+                    out[s["entity_id"]] = (
+                        s["state"],
+                        datetime.fromisoformat(last.replace("Z", "+00:00")),
+                    )
+        return out
+
+    async def get_automated_entities(self) -> set[str]:
+        """Return set of entity_ids that appear as targets in any active automation."""
+        out: set[str] = set()
+        try:
+            config_resp = await self._api_get("/config/automation/config")
+        except Exception:
+            return out  # endpoint may not be available; be tolerant
+        if isinstance(config_resp, list):
+            for auto in config_resp:
+                for action in auto.get("action") or []:
+                    target = action.get("target") or {}
+                    eid = target.get("entity_id")
+                    if isinstance(eid, str):
+                        out.add(eid)
+                    elif isinstance(eid, list):
+                        out.update(eid)
+        return out
+
+    async def write_suggestions(self, suggestions: list) -> None:
+        """Alias for write_suggestions_state — used by the new mining pipeline."""
+        await self.write_suggestions_state(suggestions)
+
     async def create_automation(self, config_dict: dict) -> dict:
         """Create a new HA automation via REST. Returns {success, automation_id} or {success, error}."""
         if not self._session:
