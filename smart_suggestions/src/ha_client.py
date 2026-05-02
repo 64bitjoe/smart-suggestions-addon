@@ -293,23 +293,19 @@ class HAClient:
             _LOGGER.warning("get_automations failed: %s", e)
             return []
 
-    async def get_states(self) -> list[dict]:
-        """Return the raw list of all entity state dicts from /api/states."""
-        return await self._api_get("/states")
-
     async def get_current_on_states(self) -> dict[str, tuple[str, datetime]]:
         """Return {entity_id: (state, last_changed_dt)} for entities currently in an active state.
 
         Active states: on, heat, cool, heat_cool, fan_only, auto.
+        Reads from the cached self._states dict maintained by the 30-second poller.
         """
-        states = await self.get_states()
         active = {"on", "heat", "cool", "heat_cool", "fan_only", "auto"}
         out: dict[str, tuple[str, datetime]] = {}
-        for s in states:
+        for entity_id, s in self._states.items():
             if s.get("state") in active:
                 last = s.get("last_changed")
                 if last:
-                    out[s["entity_id"]] = (
+                    out[entity_id] = (
                         s["state"],
                         datetime.fromisoformat(last.replace("Z", "+00:00")),
                     )

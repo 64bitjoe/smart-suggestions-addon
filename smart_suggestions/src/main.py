@@ -2,6 +2,7 @@
 """Smart Suggestions Add-on — main event loop (redesigned)."""
 from __future__ import annotations
 
+import anthropic as _anthropic
 import asyncio
 import json
 import logging
@@ -36,8 +37,6 @@ _OPTIONS_FILE = "/data/options.json"
 _FEEDBACK_FILE = "/data/feedback.json"
 _DENY_LIST_FILE = "/data/deny_list.json"
 
-# Shared state between hourly mining loop and 5-minute waste loop.
-_pipeline_state: dict = {"last_suggestion_zone": [], "last_noticed_zone": []}
 
 
 async def mine_and_emit_suggestions(
@@ -49,10 +48,11 @@ async def mine_and_emit_suggestions(
     history_window_days: int = 30,
 ) -> None:
     """Run all four miners, filter, describe, and write suggestions."""
-    since = datetime.now(timezone.utc) - timedelta(days=history_window_days)
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=history_window_days)
     all_changes = await db_reader.get_all_state_changes(since)
 
-    temporal = await TemporalMiner().run(all_changes, now=datetime.now(timezone.utc))
+    temporal = await TemporalMiner().run(all_changes, now=now)
     sequence = await SequenceMiner().run(all_changes)
     cross = await CrossAreaMiner().run(all_changes)
     candidates = list(temporal) + list(sequence) + list(cross)
@@ -79,6 +79,7 @@ async def mine_and_emit_suggestions(
 
     combined = state["last_suggestion_zone"] + state.get("last_noticed_zone", [])
     await ha_client.write_suggestions(combined)
+    state["hourly_completed"] = True
 
 
 async def mine_and_emit_waste_only(
@@ -89,6 +90,9 @@ async def mine_and_emit_waste_only(
     state: dict,
 ) -> None:
     """5-minute waste-only check; refreshes only the noticed zone."""
+    if not state.get("hourly_completed", False):
+        _LOGGER.info("waste check: skipping write, hourly miner has not completed yet")
+        return
     since = datetime.now(timezone.utc) - timedelta(days=30)
     history = await db_reader.get_all_state_changes(since)
     current = await ha_client.get_current_on_states()
@@ -123,11 +127,12 @@ async def hourly_mining_loop(
     dismissal_store: DismissalStore,
     llm_describer: LlmDescriber,
     ha_client: HAClient,
+    state: dict,
 ) -> None:
     while True:
         try:
             await mine_and_emit_suggestions(
-                db_reader, dismissal_store, llm_describer, ha_client, _pipeline_state
+                db_reader, dismissal_store, llm_describer, ha_client, state
             )
         except Exception:
             _LOGGER.exception("hourly mining failed")
@@ -139,11 +144,12 @@ async def waste_check_loop(
     dismissal_store: DismissalStore,
     llm_describer: LlmDescriber,
     ha_client: HAClient,
+    state: dict,
 ) -> None:
     while True:
         try:
             await mine_and_emit_waste_only(
-                db_reader, dismissal_store, llm_describer, ha_client, _pipeline_state
+                db_reader, dismissal_store, llm_describer, ha_client, state
             )
         except Exception:
             _LOGGER.exception("waste check failed")
@@ -231,6 +237,12 @@ class SmartSuggestionsAddon:
         self._ollama_connected: bool = False
         self._last_refresh_str: str = "Never"
         self._last_analysis_str: str = "Never"
+        self._anthropic_client = None
+        self._pipeline_state: dict = {
+            "last_suggestion_zone": [],
+            "last_noticed_zone": [],
+            "hourly_completed": False,
+        }
 
     def _push_system_status(self) -> None:
         status = {
@@ -567,19 +579,18 @@ class SmartSuggestionsAddon:
         loop.create_task(self._nightly_analysis_scheduler())
 
         # ── New pattern-mining pipeline (runs alongside old paths until Task 12 removes them) ──
-        import anthropic as _anthropic
         _db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
         _dismissal_store = DismissalStore(db_path="/data/dismissals.db")
-        _anthropic_client = _anthropic.AsyncAnthropic(
+        self._anthropic_client = _anthropic.AsyncAnthropic(
             api_key=self._opts.get("ai_api_key", "")
         )
         _llm_describer = LlmDescriber(
-            client=_anthropic_client,
+            client=self._anthropic_client,
             cache_path="/data/llm_cache.db",
             model=self._opts.get("ai_model", "claude-haiku-4-5-20251001"),
         )
-        loop.create_task(hourly_mining_loop(_db_reader, _dismissal_store, _llm_describer, self._ha))
-        loop.create_task(waste_check_loop(_db_reader, _dismissal_store, _llm_describer, self._ha))
+        loop.create_task(hourly_mining_loop(_db_reader, _dismissal_store, _llm_describer, self._ha, self._pipeline_state))
+        loop.create_task(waste_check_loop(_db_reader, _dismissal_store, _llm_describer, self._ha, self._pipeline_state))
 
         await self._ha.start()  # blocks forever — keeps event loop alive
 
@@ -589,6 +600,8 @@ class SmartSuggestionsAddon:
         if self._ha:
             await self._ha.stop()
         await self._ws_server.stop()
+        if self._anthropic_client is not None:
+            await self._anthropic_client.aclose()
 
 
 if __name__ == "__main__":
