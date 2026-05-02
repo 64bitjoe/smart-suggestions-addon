@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "2.8.2"
+version: "3.0.0"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -25,16 +25,16 @@ options:
   max_suggestions: 7
   max_entities: 150
   history_hours: 4
-  analysis_depth_days: 7
-  analysis_schedule: "03:00"
-  analysis_interval_hours: 2
   narrator_provider: "ai"
   ai_provider: "anthropic"
   ai_api_key: ""
   ai_base_url: ""
   ai_model: "claude-haiku-4-5-20251001"
-  deep_analysis_model: "claude-opus-4-6"
-  correlation_window_minutes: 15
+  mining_history_days: 30
+  mining_interval_hours: 1
+  waste_check_interval_minutes: 5
+  min_pattern_occurrences: 5
+  min_pattern_confidence: 0.7
   pattern_confidence_threshold: 0.6
   domains:
     - light
@@ -57,16 +57,16 @@ schema:
   max_suggestions: int
   max_entities: int
   history_hours: int
-  analysis_depth_days: int
-  analysis_schedule: str
-  analysis_interval_hours: int
   narrator_provider: str
   ai_provider: str
   ai_api_key: password?
   ai_base_url: str?
   ai_model: str?
-  deep_analysis_model: str?
-  correlation_window_minutes: int
+  mining_history_days: int
+  mining_interval_hours: int
+  waste_check_interval_minutes: int
+  min_pattern_occurrences: int
+  min_pattern_confidence: float
   pattern_confidence_threshold: float
   domains:
     - str

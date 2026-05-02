@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 
 from pattern_store import PatternStore
 from statistical_engine import StatisticalEngine
-from anthropic_analyzer import AnthropicAnalyzer
 from scene_engine import SceneEngine
 from narrator import OllamaNarrator, AINarrator
 from automation_builder import AutomationBuilder
@@ -195,7 +194,6 @@ class SmartSuggestionsAddon:
         )
         _key = opts.get("ai_api_key", "")
         _ai_model = opts.get("ai_model", "claude-haiku-4-5-20251001")
-        _deep_model = opts.get("deep_analysis_model", "") or _ai_model
         narrator_provider = opts.get("narrator_provider", "ai" if _key else "ollama")
         if narrator_provider == "ai" and _key:
             self._narrator = AINarrator(
@@ -212,14 +210,7 @@ class SmartSuggestionsAddon:
             )
             _LOGGER.info("Narrator: using Ollama at %s", opts.get("ollama_url", "http://localhost:11434"))
         _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
-        _LOGGER.info("Models: narration=%s, deep_analysis=%s", _ai_model, _deep_model)
-        self._analyzer = AnthropicAnalyzer(
-            ai_provider=opts.get("ai_provider", "anthropic"),
-            ai_api_key=_key,
-            ai_model=_deep_model,
-            analysis_depth_days=int(opts.get("analysis_depth_days", 7)),
-            ai_base_url=opts.get("ai_base_url", ""),
-        )
+        _LOGGER.info("Model: narration=%s", _ai_model)
         self._automation_builder = AutomationBuilder(
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=_key,
@@ -424,72 +415,6 @@ class SmartSuggestionsAddon:
                 await self._ws_server.broadcast_status("error")
                 self._push_system_status()
 
-    async def _run_analysis(self) -> None:
-        if not self._last_states or not self._ha:
-            return
-        try:
-            history = await self._ha.fetch_history(self._opts.get("analysis_depth_days", 7) * 24)
-            existing_automations = await self._ha.get_automations() if self._ha else []
-            patterns = await self._analyzer.analyze(history, self._last_states, existing_automations)
-            if any(patterns.values()):
-                self._pattern_store.merge(patterns)
-                self._push_stored_patterns()
-                self._last_analysis_str = datetime.now().strftime("%H:%M:%S")
-                self._push_system_status()
-                _LOGGER.info(
-                    "Analysis complete: %d routines, %d correlations, %d anomalies",
-                    len(patterns.get("routines", [])),
-                    len(patterns.get("correlations", [])),
-                    len(patterns.get("anomalies", [])),
-                )
-        except Exception as e:
-            _LOGGER.warning("Analysis failed: %s", e)
-
-    async def _correlation_loop(self) -> None:
-        interval = int(self._opts.get("analysis_interval_hours", 6)) * 3600
-        while self._running:
-            await asyncio.sleep(interval)
-            if self._last_states and self._ha:
-                try:
-                    history = await self._ha.fetch_history(
-                        int(self._opts.get("analysis_depth_days", 7)) * 24
-                    )
-                    correlations = await self._stat_engine.analyze_correlations(
-                        history,
-                        self._last_states,
-                        window_minutes=int(self._opts.get("correlation_window_minutes", 5)),
-                    )
-                    if correlations:
-                        self._pattern_store.merge({"routines": [], "correlations": correlations, "anomalies": []})
-                        _LOGGER.info("Correlation scan: %d correlations stored", len(correlations))
-                except Exception as e:
-                    _LOGGER.warning("Correlation loop error: %s", e)
-
-    async def _nightly_analysis_scheduler(self) -> None:
-        # Wait until states are loaded before first-run analysis
-        while self._running and not self._last_states:
-            await asyncio.sleep(1)
-        # First-run: trigger immediately if store needs fresh analysis
-        if self._pattern_store.needs_fresh_analysis(int(self._opts.get("analysis_depth_days", 7))):
-            _LOGGER.info("First-run analysis triggered")
-            await self._run_analysis()
-        # Then schedule nightly
-        schedule_str = self._opts.get("analysis_schedule", "03:00")
-        while self._running:
-            try:
-                h, m = (int(x) for x in schedule_str.split(":"))
-            except ValueError:
-                h, m = 3, 0
-            now = datetime.now()
-            target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if target <= now:
-                target = target + timedelta(days=1)
-            sleep_seconds = (target - now).total_seconds()
-            _LOGGER.info("Nightly analysis scheduled in %.0f seconds (at %s)", sleep_seconds, schedule_str)
-            await asyncio.sleep(sleep_seconds)
-            await self._run_analysis()
-            # Loop back to top to recompute next occurrence
-
     async def _on_feedback(self, entity_id: str, vote: str) -> None:
         outcome = "run" if vote == "up" else "dismissed"
         await self._usage_log.log(entity_id, "", outcome, 0.0)
@@ -505,37 +430,20 @@ class SmartSuggestionsAddon:
         result = await self._automation_builder.build(ctx, self._ha)
         await self._ws_server.broadcast_automation_result(result)
 
-    async def _on_trigger_analysis(self) -> None:
-        asyncio.get_running_loop().create_task(self._run_analysis())
-
     async def _on_trigger_refresh(self) -> None:
         if self._last_states:
             asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
     async def _on_trigger_refresh_all(self) -> None:
-        """Full pipeline: re-fetch states, run analysis + correlations, then refresh suggestions."""
+        """Re-fetch states then refresh suggestions."""
         _LOGGER.info("Refresh All triggered")
         if not self._ha:
             return
         try:
-            # 1. Fetch fresh states
             await self._ha._fetch_states()
             states = self._last_states
             if not states:
                 return
-            # 2. Run pattern analysis
-            await self._run_analysis()
-            # 3. Run correlation scan
-            history = await self._ha.fetch_history(
-                int(self._opts.get("analysis_depth_days", 7)) * 24
-            )
-            correlations = await self._stat_engine.analyze_correlations(
-                history, states,
-                window_minutes=int(self._opts.get("correlation_window_minutes", 15)),
-            )
-            if correlations:
-                self._pattern_store.merge({"routines": [], "correlations": correlations, "anomalies": []})
-            # 4. Refresh suggestions with new patterns
             await self._run_refresh_cycle(states)
             _LOGGER.info("Refresh All complete")
         except Exception as e:
@@ -545,7 +453,6 @@ class SmartSuggestionsAddon:
         _LOGGER.info("Smart Suggestions starting")
         self._ws_server.register_feedback_handler(self._on_feedback)
         self._ws_server.register_refresh_handler(self._on_trigger_refresh)
-        self._ws_server.register_analyze_handler(self._on_trigger_analysis)
         self._ws_server.register_refresh_all_handler(self._on_trigger_refresh_all)
         self._ws_server.register_automation_handler(self._on_save_automation)
         self._ws_server.register_deny_handler(self._on_deny_entity)
@@ -575,10 +482,6 @@ class SmartSuggestionsAddon:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
-        loop.create_task(self._correlation_loop())
-        loop.create_task(self._nightly_analysis_scheduler())
-
-        # ── New pattern-mining pipeline (runs alongside old paths until Task 12 removes them) ──
         _db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
         _dismissal_store = DismissalStore(db_path="/data/dismissals.db")
         self._anthropic_client = _anthropic.AsyncAnthropic(
