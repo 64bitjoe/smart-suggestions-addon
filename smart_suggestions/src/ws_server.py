@@ -690,7 +690,8 @@ fetch(BASE+'/logs').then(r=>r.json()).then(d=>{_logs=d;}).catch(()=>{});
 class WSServer:
     """Manages connected card WebSocket clients and broadcasts events."""
 
-    def __init__(self) -> None:
+    def __init__(self, dismissal_store=None) -> None:
+        self._dismissal_store = dismissal_store
         self._clients: set[web.WebSocketResponse] = set()
         self._app = web.Application()
         self._app.router.add_get("/ws", self._ws_handler)
@@ -812,6 +813,21 @@ class WSServer:
         elif msg_type == "save_automation":
             suggestion = msg.get("suggestion", {})
             asyncio.create_task(self._handle_save_automation(suggestion))
+
+        elif msg_type == "dismiss":
+            sig = msg.get("signature")
+            miner_type_str = msg.get("miner_type")
+            if sig and miner_type_str and self._dismissal_store is not None:
+                try:
+                    from candidate import MinerType
+                    from datetime import datetime, timezone
+                    await self._dismissal_store.add_dismissal(
+                        sig, MinerType(miner_type_str), datetime.now(timezone.utc)
+                    )
+                    await ws.send_json({"type": "dismiss_ack", "signature": sig})
+                except Exception:
+                    _LOGGER.exception("dismiss handler failed for signature=%s miner_type=%s", sig, miner_type_str)
+                    await ws.send_json({"type": "dismiss_error", "signature": sig})
 
     async def broadcast_automation_result(self, result: dict) -> None:
         await self.broadcast({"type": "automation_result", **result})

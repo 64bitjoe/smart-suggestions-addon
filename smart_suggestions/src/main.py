@@ -180,7 +180,8 @@ class _WSLogHandler(logging.Handler):
 class SmartSuggestionsAddon:
     def __init__(self, opts: dict) -> None:
         self._opts = opts
-        self._ws_server = WSServer()
+        self._dismissal_store = DismissalStore(db_path="/data/dismissals.db")
+        self._ws_server = WSServer(dismissal_store=self._dismissal_store)
         self._pattern_store = PatternStore()
         self._stat_engine = StatisticalEngine(
             self._pattern_store,
@@ -483,7 +484,6 @@ class SmartSuggestionsAddon:
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
         _db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
-        _dismissal_store = DismissalStore(db_path="/data/dismissals.db")
         self._anthropic_client = _anthropic.AsyncAnthropic(
             api_key=self._opts.get("ai_api_key", "")
         )
@@ -492,8 +492,8 @@ class SmartSuggestionsAddon:
             cache_path="/data/llm_cache.db",
             model=self._opts.get("ai_model", "claude-haiku-4-5-20251001"),
         )
-        loop.create_task(hourly_mining_loop(_db_reader, _dismissal_store, _llm_describer, self._ha, self._pipeline_state))
-        loop.create_task(waste_check_loop(_db_reader, _dismissal_store, _llm_describer, self._ha, self._pipeline_state))
+        loop.create_task(hourly_mining_loop(_db_reader, self._dismissal_store, _llm_describer, self._ha, self._pipeline_state))
+        loop.create_task(waste_check_loop(_db_reader, self._dismissal_store, _llm_describer, self._ha, self._pipeline_state))
 
         await self._ha.start()  # blocks forever — keeps event loop alive
 
