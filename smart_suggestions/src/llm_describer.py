@@ -1,6 +1,7 @@
 from __future__ import annotations
 import aiosqlite
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,17 @@ class Description:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _strip_json_fences(text: str) -> str:
+    """Strip optional ```json ... ``` markdown fences from an LLM response."""
+    s = text.strip()
+    if s.startswith("```"):
+        # Remove opening fence (with optional language tag)
+        s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
+        # Remove trailing fence
+        s = re.sub(r"\n?```\s*$", "", s)
+    return s.strip()
 
 
 def _build_prompt(c: Candidate) -> str:
@@ -78,19 +90,20 @@ class LlmDescriber:
         prompt = _build_prompt(candidate)
         resp = await self.client.messages.create(
             model=self.model,
-            max_tokens=600,
+            max_tokens=900,
             messages=[{"role": "user", "content": prompt}],
         )
         text = resp.content[0].text
+        stripped = _strip_json_fences(text)
         try:
-            payload = json.loads(text)
+            payload = json.loads(stripped)
         except json.JSONDecodeError as e:
             raise RuntimeError(f"LLM returned non-JSON: {text!r}") from e
 
         desc = Description(
-            title=payload["title"],
-            description=payload["description"],
-            automation_yaml=payload["automation_yaml"],
+            title=str(payload["title"]),
+            description=str(payload["description"]),
+            automation_yaml=str(payload["automation_yaml"]),
         )
         await self._store(sig, desc)
         return desc

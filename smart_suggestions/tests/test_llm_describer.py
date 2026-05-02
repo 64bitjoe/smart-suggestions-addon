@@ -13,7 +13,7 @@ class FakeAnthropic:
     def messages(self):
         return self
 
-    async def create(self, **kwargs):
+    async def create(self, *, model: str, max_tokens: int, messages: list, **kwargs):
         self.calls += 1
         class R:
             content = [type("X", (), {"text": (
@@ -66,3 +66,33 @@ async def test_describer_cache_expires_after_ttl(candidate, tmp_path, monkeypatc
     monkeypatch.setattr(mod, "_now", lambda: real_now)
     await d.describe(candidate)
     assert fake.calls == 2
+
+
+class FakeAnthropicWithFences:
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def messages(self):
+        return self
+
+    async def create(self, *, model: str, max_tokens: int, messages: list, **kwargs):
+        self.calls += 1
+        class R:
+            content = [type("X", (), {"text": (
+                '```json\n'
+                '{"title": "Foo", "description": "bar", "automation_yaml": "alias: foo"}\n'
+                '```'
+            )})()]
+        return R()
+
+
+async def test_describer_handles_markdown_fenced_json(candidate, tmp_path):
+    """Claude sometimes wraps responses in ```json fences. Parser must tolerate it."""
+    fake = FakeAnthropicWithFences()
+    d = LlmDescriber(client=fake, cache_path=tmp_path / "llm.db")
+    await d.init()
+    desc = await d.describe(candidate)
+    assert desc.title == "Foo"
+    assert desc.description == "bar"
+    assert desc.automation_yaml == "alias: foo"
