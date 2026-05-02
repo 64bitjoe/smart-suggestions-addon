@@ -86,8 +86,9 @@ _UI_HTML = """<!DOCTYPE html>
   .tab-btn.active { color: var(--primary-color, #03a9f4); border-bottom-color: var(--primary-color, #03a9f4); }
 
   /* ── Tab pages ── */
-  .tab-page { display: none; padding: 16px; }
+  .tab-page { display: none; padding: 16px; max-width: 980px; margin: 0 auto; }
   .tab-page.active { display: block; }
+  .header > * { max-width: 980px; margin-left: auto; margin-right: auto; }
 
   /* ── Action buttons ── */
   .action-row { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -115,7 +116,7 @@ _UI_HTML = """<!DOCTYPE html>
   }
   .sug {
     background: var(--card-background-color, #1c1c1e);
-    padding: 14px 16px; display: flex; gap: 14px; align-items: flex-start;
+    padding: 10px 14px; display: flex; gap: 12px; align-items: center;
   }
   .sug-icon { width: 42px; height: 42px; border-radius: var(--ha-card-border-radius, 12px); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; background: rgba(var(--rgb-primary-text-color,255,255,255),0.06); }
   .sug-body { flex: 1; min-width: 0; }
@@ -126,7 +127,7 @@ _UI_HTML = """<!DOCTYPE html>
   .state-arrow { color: var(--secondary-text-color, #8e8e93); font-size: 14px; }
   .action-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: var(--primary-color, #03a9f4); color: #fff; text-transform: uppercase; letter-spacing: 0.5px; }
   .sug-reason { font-size: 14px; color: var(--secondary-text-color, #8e8e93); line-height: 1.45; }
-  .sug-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; align-items: center; padding-top: 2px; }
+  .sug-actions { display: flex; flex-direction: row; gap: 4px; flex-shrink: 0; align-items: center; }
   .vote-btn {
     width: 36px; height: 36px; border: none; border-radius: 8px;
     background: rgba(var(--rgb-primary-text-color,255,255,255),0.06);
