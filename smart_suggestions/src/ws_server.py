@@ -38,164 +38,231 @@ _UI_HTML = """<!DOCTYPE html>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-    background: #000; color: #fff;
+    font-family: var(--paper-font-body1_-_font-family, -apple-system, Roboto, system-ui, sans-serif);
+    background: var(--primary-background-color, #111111);
+    color: var(--primary-text-color, #fff);
     min-height: 100vh; padding: 0 0 72px;
   }
 
   /* ── Header ── */
-  .header { position: sticky; top: 0; z-index: 100; background: rgba(0,0,0,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); padding: 16px 16px 0; border-bottom: 0.5px solid rgba(255,255,255,0.08); }
+  .header {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--primary-background-color, #111111);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    padding: 16px 16px 0;
+    border-bottom: 0.5px solid rgba(var(--rgb-primary-text-color, 255,255,255), 0.08);
+  }
   .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-  .header-icon { width: 36px; height: 36px; background: #007AFF; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+  .header-icon {
+    width: 36px; height: 36px;
+    background: var(--primary-color, #03a9f4);
+    border-radius: 10px; display: flex; align-items: center; justify-content: center;
+    color: #fff; flex-shrink: 0;
+  }
   h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; flex: 1; }
-  .meta { font-size: 12px; color: #8E8E93; padding-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #34C759; display: inline-block; flex-shrink: 0; }
-  .status-dot.updating { background: #FF9F0A; animation: pulse 1s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .meta { font-size: 12px; color: var(--secondary-text-color, #8e8e93); padding-bottom: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success-color, #4caf50); display: inline-block; flex-shrink: 0; }
+  .status-dot.updating { background: var(--warning-color, #ff9800); }
+  .cycle-chip { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: rgba(var(--rgb-primary-text-color,255,255,255),0.07); white-space: nowrap; }
+  .cycle-chip.mining { background: rgba(var(--rgb-primary-color,3,169,244),0.15); color: var(--primary-color,#03a9f4); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .status-dot.updating { animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .tab-page.active { animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .pipeline-new { animation: revealIn 0.4s ease-out; }
+    @keyframes revealIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+  }
 
   /* ── Tab bar ── */
   .tab-bar { display: flex; gap: 0; }
   .tab-btn {
     flex: 1; background: none; border: none; border-bottom: 2.5px solid transparent;
-    color: #636366; padding: 10px 8px; font-size: 13px; font-weight: 600;
-    cursor: pointer; transition: all 0.2s; text-align: center;
-    -webkit-tap-highlight-color: transparent;
+    color: var(--disabled-text-color, #636366); padding: 10px 8px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: color 0.2s, border-color 0.2s; text-align: center;
+    min-height: 36px; -webkit-tap-highlight-color: transparent;
   }
-  .tab-btn.active { color: #007AFF; border-bottom-color: #007AFF; }
-  .tab-btn .tab-count { font-size: 10px; background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 8px; margin-left: 4px; vertical-align: middle; }
-  .tab-btn.active .tab-count { background: rgba(0,122,255,0.2); color: #007AFF; }
+  .tab-btn.active { color: var(--primary-color, #03a9f4); border-bottom-color: var(--primary-color, #03a9f4); }
 
   /* ── Tab pages ── */
-  .tab-page { display: none; padding: 16px; animation: fadeIn 0.2s ease; }
+  .tab-page { display: none; padding: 16px; }
   .tab-page.active { display: block; }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
   /* ── Action buttons ── */
   .action-row { display: flex; gap: 8px; margin-bottom: 16px; }
   .action-btn {
-    flex: 1; background: rgba(255,255,255,0.08); color: #fff; border: none;
-    border-radius: 12px; padding: 12px 14px; font-size: 14px; font-weight: 600;
+    flex: 1; background: rgba(var(--rgb-primary-text-color,255,255,255),0.08);
+    color: var(--primary-text-color, #fff); border: none;
+    border-radius: 10px; padding: 12px 14px; font-size: 14px; font-weight: 600; min-height: 44px;
     cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
-    transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+    transition: opacity 0.15s, transform 0.15s; -webkit-tap-highlight-color: transparent;
   }
   .action-btn:active { transform: scale(0.97); opacity: 0.8; }
-  .action-btn.primary { background: #007AFF; }
+  .action-btn.primary { background: var(--primary-color, #03a9f4); color: #fff; }
   .action-btn.loading { opacity: 0.55; pointer-events: none; }
 
   /* ── Section headers ── */
-  .sh { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #636366; padding: 16px 0 8px; }
+  .sh { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--disabled-text-color, #636366); padding: 16px 0 8px; }
   .sh:first-child { padding-top: 0; }
 
   /* ── Suggestion cards ── */
-  .sug-list { display: flex; flex-direction: column; gap: 1px; background: rgba(255,255,255,0.06); border-radius: 14px; overflow: hidden; margin-bottom: 12px; }
-  .sug { background: #1C1C1E; padding: 14px 16px; display: flex; gap: 14px; align-items: flex-start; }
-  .sug-icon { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; background: #2C2C2E; }
+  .sug-list {
+    display: flex; flex-direction: column; gap: 1px;
+    background: rgba(var(--rgb-primary-text-color,255,255,255),0.06);
+    border-radius: var(--ha-card-border-radius, 12px); overflow: hidden; margin-bottom: 12px;
+    box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.16));
+  }
+  .sug {
+    background: var(--card-background-color, #1c1c1e);
+    padding: 14px 16px; display: flex; gap: 14px; align-items: flex-start;
+  }
+  .sug-icon { width: 42px; height: 42px; border-radius: var(--ha-card-border-radius, 12px); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; background: rgba(var(--rgb-primary-text-color,255,255,255),0.06); }
   .sug-body { flex: 1; min-width: 0; }
   .sug-name { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
-  .sug-eid { font-size: 11px; color: #48484A; font-family: 'SF Mono','Menlo',monospace; margin-bottom: 4px; }
-  .sug-transition { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .sug-eid { font-size: 11px; color: var(--secondary-text-color, #48484a); font-family: 'Menlo','Consolas',monospace; margin-bottom: 4px; }
+  .sug-transition { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
   .state-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: #fff; text-transform: uppercase; letter-spacing: 0.5px; }
-  .state-arrow { color: #8E8E93; font-size: 14px; }
-  .action-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: #007AFF; color: #fff; text-transform: uppercase; letter-spacing: 0.5px; }
-  .sug-reason { font-size: 14px; color: #8E8E93; line-height: 1.45; }
+  .state-arrow { color: var(--secondary-text-color, #8e8e93); font-size: 14px; }
+  .action-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: var(--primary-color, #03a9f4); color: #fff; text-transform: uppercase; letter-spacing: 0.5px; }
+  .sug-reason { font-size: 14px; color: var(--secondary-text-color, #8e8e93); line-height: 1.45; }
   .sug-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; align-items: center; padding-top: 2px; }
-  .vote-btn { width: 32px; height: 32px; border: none; border-radius: 8px; background: rgba(255,255,255,0.06); color: #636366; font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; -webkit-tap-highlight-color: transparent; }
+  .vote-btn {
+    width: 36px; height: 36px; border: none; border-radius: 8px;
+    background: rgba(var(--rgb-primary-text-color,255,255,255),0.06);
+    color: var(--disabled-text-color, #636366);
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s; -webkit-tap-highlight-color: transparent;
+  }
   .vote-btn:active { transform: scale(0.88); }
-  .vote-btn.up.voted { background: rgba(52,199,89,0.2); color: #34C759; }
-  .vote-btn.down.voted { background: rgba(255,59,48,0.2); color: #FF3B30; }
-  .deny-btn { width: 32px; height: 32px; border: none; border-radius: 8px; background: none; color: #48484A; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; }
-  .deny-btn:hover { background: rgba(255,59,48,0.12); color: #FF3B30; }
+  .vote-btn.up.voted { background: rgba(76,175,80,0.2); color: var(--success-color, #4caf50); }
+  .vote-btn.down.voted { background: rgba(244,67,54,0.2); color: var(--error-color, #f44336); }
+  .deny-btn {
+    width: 36px; height: 36px; border: none; border-radius: 8px; background: none;
+    color: var(--secondary-text-color, #48484a); font-size: 13px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s, color 0.15s;
+  }
+  .deny-btn:hover { background: rgba(244,67,54,0.12); color: var(--error-color, #f44336); }
 
-  .empty { text-align: center; padding: 60px 20px; color: #636366; font-size: 15px; }
-  .empty-icon { font-size: 44px; margin-bottom: 12px; opacity: 0.3; }
+  .empty { text-align: center; padding: 60px 20px; color: var(--disabled-text-color, #636366); font-size: 15px; line-height: 1.6; }
+  .empty svg { opacity: 0.25; margin-bottom: 12px; display: block; margin-left: auto; margin-right: auto; }
+  .empty-hint { font-size: 13px; margin-top: 8px; color: var(--secondary-text-color, #8e8e93); }
+  .empty-hint b { color: var(--primary-color, #03a9f4); }
 
-  /* ── Discoveries ── */
-  .disc-card { background: #1C1C1E; border-radius: 14px; padding: 16px; margin-bottom: 10px; border-left: 3px solid transparent; }
-  .disc-card.routine { border-left-color: #007AFF; }
-  .disc-card.correlation { border-left-color: #34C759; }
-  .disc-card.anomaly { border-left-color: #FF3B30; }
-  .disc-card.new { background: linear-gradient(135deg, rgba(175,82,222,0.08), rgba(0,122,255,0.05)); border: 1px solid rgba(175,82,222,0.2); animation: revealIn 0.4s ease-out; }
-  @keyframes revealIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
-  .disc-top { display: flex; align-items: flex-start; gap: 12px; }
-  .disc-icon { font-size: 24px; flex-shrink: 0; }
-  .disc-info { flex: 1; min-width: 0; }
-  .disc-name { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
-  .disc-desc { font-size: 14px; color: #8E8E93; line-height: 1.45; margin-bottom: 8px; }
-  .disc-eid { font-size: 11px; color: #48484A; font-family: 'SF Mono','Menlo',monospace; margin-bottom: 6px; }
-  .disc-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-  .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
-  .badge-new { background: rgba(175,82,222,0.2); color: #BF7AF0; }
-  .badge-time { background: rgba(0,122,255,0.15); color: #4DA6FF; }
-  .badge-days { background: rgba(52,199,89,0.12); color: #34C759; }
-  .badge-conf { background: rgba(255,159,10,0.12); color: #FF9F0A; }
-  .badge-inst { background: rgba(175,82,222,0.15); color: #BF7AF0; }
-  .badge-sev-low { background: rgba(255,159,10,0.12); color: #FF9F0A; }
-  .badge-sev-medium { background: rgba(255,149,0,0.15); color: #FF9500; }
-  .badge-sev-high { background: rgba(255,59,48,0.15); color: #FF3B30; }
-  .disc-actions { display: flex; gap: 8px; }
-  .disc-btn { flex: 1; padding: 10px 12px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; -webkit-tap-highlight-color: transparent; text-align: center; }
-  .disc-btn:active { transform: scale(0.97); opacity: 0.8; }
-  .disc-btn-auto { background: rgba(0,122,255,0.15); color: #007AFF; }
-  .disc-btn-nah { background: rgba(255,255,255,0.06); color: #636366; }
-  .disc-empty { text-align: center; padding: 40px 20px; color: #48484A; font-size: 14px; }
-
-  /* ── Trends ── */
-  .trend-card { background: #1C1C1E; border-radius: 14px; overflow: hidden; margin-bottom: 10px; }
-  .trend-row { padding: 14px 16px; border-bottom: 0.5px solid rgba(255,255,255,0.05); }
-  .trend-row:last-child { border-bottom: none; }
-  .trend-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  .trend-value { font-size: 13px; color: #8E8E93; line-height: 1.5; }
-  .bar-row { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
-  .bar-label { width: 30px; font-size: 11px; color: #636366; text-align: right; flex-shrink: 0; }
-  .bar-track { flex: 1; height: 10px; background: rgba(255,255,255,0.05); border-radius: 5px; overflow: hidden; }
-  .bar-fill { height: 100%; border-radius: 5px; transition: width 0.4s ease; }
-  .bar-count { width: 20px; font-size: 11px; color: #48484A; }
+  /* ── Pipeline tab ── */
+  .pipeline-section { margin-bottom: 20px; }
+  .pipeline-card {
+    background: var(--card-background-color, #1c1c1e);
+    border-radius: var(--ha-card-border-radius, 12px);
+    overflow: hidden; margin-bottom: 10px;
+    box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.16));
+  }
+  .pipeline-row { padding: 14px 16px; border-bottom: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); display: flex; align-items: center; gap: 12px; }
+  .pipeline-row:last-child { border-bottom: none; }
+  .pipeline-row-label { font-size: 13px; font-weight: 600; flex: 1; }
+  .pipeline-row-meta { font-size: 12px; color: var(--secondary-text-color, #8e8e93); }
+  .pipeline-row-value {
+    font-size: 13px; font-weight: 700;
+    background: rgba(var(--rgb-primary-color,3,169,244),0.12);
+    color: var(--primary-color, #03a9f4);
+    padding: 3px 10px; border-radius: 10px; flex-shrink: 0; min-width: 44px; text-align: center;
+  }
+  .pipeline-row-desc { font-size: 12px; color: var(--secondary-text-color, #8e8e93); line-height: 1.4; }
+  .pipeline-stat { display: flex; gap: 12px; padding: 14px 16px; border-bottom: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); }
+  .pipeline-stat:last-child { border-bottom: none; }
+  .pipeline-stat-icon { font-size: 20px; flex-shrink: 0; }
+  .pipeline-stat-body { flex: 1; min-width: 0; }
+  .pipeline-stat-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+  .pipeline-stat-val { font-size: 12px; color: var(--secondary-text-color, #8e8e93); }
+  .pipeline-settings-row { padding: 12px 16px; border-bottom: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); display: flex; align-items: flex-start; gap: 10px; }
+  .pipeline-settings-row:last-child { border-bottom: none; }
+  .pipeline-settings-info { flex: 1; min-width: 0; }
+  .pipeline-settings-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .pipeline-settings-desc { font-size: 12px; color: var(--secondary-text-color, #8e8e93); line-height: 1.4; }
+  .ha-settings-link {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 14px;
+    padding: 10px 16px; border-radius: 10px; font-size: 13px; font-weight: 600; min-height: 36px;
+    background: rgba(var(--rgb-primary-text-color,255,255,255),0.06);
+    color: var(--primary-text-color, #fff); text-decoration: none;
+    border: none; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .ha-settings-link:hover { background: rgba(var(--rgb-primary-text-color,255,255,255),0.12); }
 
   /* ── System tab ── */
   .sys-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-  .sys-card { background: #1C1C1E; border-radius: 12px; padding: 14px; }
-  .sys-label { font-size: 11px; color: #636366; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .sys-card {
+    background: var(--card-background-color, #1c1c1e);
+    border-radius: var(--ha-card-border-radius, 12px);
+    padding: 14px;
+    box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.16));
+  }
+  .sys-label { font-size: 11px; color: var(--disabled-text-color, #636366); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
   .sys-val { font-size: 15px; font-weight: 600; }
   .sys-card.full { grid-column: 1 / -1; }
   .inject-search {
-    width: 100%; background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.1); border-radius: 10px;
-    color: #fff; padding: 10px 14px; font-size: 15px; outline: none; margin-bottom: 8px;
+    width: 100%; background: rgba(var(--rgb-primary-text-color,255,255,255),0.08);
+    border: 1px solid rgba(var(--rgb-primary-text-color,255,255,255),0.1);
+    border-radius: 10px;
+    color: var(--primary-text-color, #fff); padding: 10px 14px; font-size: 15px; outline: none; margin-bottom: 8px;
+    font-family: inherit;
   }
-  .inject-search::placeholder { color: #48484A; }
-  .entity-list { background: #1C1C1E; border-radius: 12px; overflow: hidden; max-height: 320px; overflow-y: auto; }
-  .entity-row { display: flex; align-items: center; padding: 10px 14px; gap: 10px; border-top: 0.5px solid rgba(255,255,255,0.05); }
+  .inject-search::placeholder { color: var(--secondary-text-color, #48484a); }
+  .entity-list {
+    background: var(--card-background-color, #1c1c1e);
+    border-radius: var(--ha-card-border-radius, 12px);
+    overflow: hidden; max-height: 320px; overflow-y: auto;
+  }
+  .entity-row { display: flex; align-items: center; padding: 10px 14px; gap: 10px; border-top: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); min-height: 44px; }
   .entity-row:first-child { border-top: none; }
   .entity-info { flex: 1; min-width: 0; }
   .entity-name { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .entity-id { font-size: 11px; color: #48484A; margin-top: 1px; }
-  .add-btn { background: rgba(0,122,255,0.15); color: #007AFF; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
-  .no-results { padding: 20px; text-align: center; color: #48484A; font-size: 14px; }
-  .deny-row { display: flex; align-items: center; padding: 10px 14px; gap: 10px; border-top: 0.5px solid rgba(255,255,255,0.05); }
+  .entity-id { font-size: 11px; color: var(--secondary-text-color, #48484a); margin-top: 1px; }
+  .add-btn {
+    background: rgba(var(--rgb-primary-color,3,169,244),0.15); color: var(--primary-color, #03a9f4);
+    border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; min-height: 36px;
+  }
+  .no-results { padding: 20px; text-align: center; color: var(--secondary-text-color, #48484a); font-size: 14px; }
+  .deny-row { display: flex; align-items: center; padding: 10px 14px; gap: 10px; border-top: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); min-height: 44px; }
   .deny-row:first-child { border-top: none; }
-  .deny-eid { flex: 1; font-size: 13px; color: #8E8E93; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .undeny-btn { background: rgba(52,199,89,0.15); color: #34C759; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+  .deny-eid { flex: 1; font-size: 13px; color: var(--secondary-text-color, #8e8e93); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .undeny-btn {
+    background: rgba(76,175,80,0.15); color: var(--success-color, #4caf50);
+    border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; min-height: 36px;
+  }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
+  .badge-new { background: rgba(191,122,240,0.2); color: #BF7AF0; }
 
   /* ── Log ── */
   .log-box {
-    background: #0a0a0a; border-radius: 12px; padding: 10px 12px;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    background: var(--code-editor-background-color, #0a0a0a);
+    border-radius: var(--ha-card-border-radius, 12px); padding: 10px 12px;
+    font-family: 'Menlo', 'Consolas', monospace;
     font-size: 11px; line-height: 1.65; max-height: 400px; overflow-y: auto;
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid rgba(var(--rgb-primary-text-color,255,255,255),0.06);
   }
   .log-line { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
-  .log-ts { color: #333; flex-shrink: 0; }
+  .log-ts { color: var(--disabled-text-color, #636366); flex-shrink: 0; opacity: 0.6; }
   .log-lvl { flex-shrink: 0; font-weight: 700; min-width: 46px; }
-  .log-lvl.DEBUG    { color: #636366; }
-  .log-lvl.INFO     { color: #34C759; }
-  .log-lvl.WARNING  { color: #FF9F0A; }
-  .log-lvl.ERROR    { color: #FF3B30; }
-  .log-lvl.CRITICAL { color: #FF3B30; }
-  .log-msg { color: #999; word-break: break-all; }
-  .log-empty { color: #333; font-style: italic; }
+  .log-lvl.DEBUG    { color: var(--disabled-text-color, #636366); }
+  .log-lvl.INFO     { color: var(--success-color, #4caf50); }
+  .log-lvl.WARNING  { color: var(--warning-color, #ff9800); }
+  .log-lvl.ERROR    { color: var(--error-color, #f44336); }
+  .log-lvl.CRITICAL { color: var(--error-color, #f44336); }
+  .log-msg { color: var(--secondary-text-color, #999); word-break: break-all; }
+  .log-empty { color: var(--disabled-text-color, #636366); font-style: italic; }
 
   /* ── Toast ── */
-  .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(80px); background: #2C2C2E; color: #fff; padding: 10px 20px; border-radius: 22px; font-size: 14px; font-weight: 500; transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); pointer-events: none; white-space: nowrap; box-shadow: 0 4px 24px rgba(0,0,0,0.6); z-index: 200; }
+  .toast {
+    position: fixed; bottom: 80px; left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: var(--card-background-color, #2c2c2e);
+    color: var(--primary-text-color, #fff);
+    padding: 10px 20px; border-radius: 22px; font-size: 14px; font-weight: 500;
+    transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
+    pointer-events: none; white-space: nowrap;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5); z-index: 200;
+    border: 1px solid rgba(var(--rgb-primary-text-color,255,255,255),0.08);
+  }
   .toast.show { transform: translateX(-50%) translateY(0); }
 </style>
 </head>
@@ -203,16 +270,19 @@ _UI_HTML = """<!DOCTYPE html>
 
 <div class="header">
   <div class="topbar">
-    <div class="header-icon">✨</div>
+    <div class="header-icon">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 2A7 7 0 0 0 5 9C5 11.38 6.19 13.47 8 14.74V17A1 1 0 0 0 9 18H15A1 1 0 0 0 16 17V14.74C17.81 13.47 19 11.38 19 9A7 7 0 0 0 12 2M9 21A1 1 0 0 0 10 22H14A1 1 0 0 0 15 21V20H9V21M11 14H13V8H15L12 4L9 8H11V14Z"/></svg>
+    </div>
     <h1>Smart Suggestions</h1>
   </div>
   <div class="meta">
     <span class="status-dot" id="status-dot"></span>
     <span id="meta-text">Connecting…</span>
+    <span class="cycle-chip" id="cycle-chip" style="display:none"></span>
   </div>
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="suggestions">Suggestions</button>
-    <button class="tab-btn" data-tab="discoveries">Discoveries <span class="tab-count" id="disc-count" style="display:none"></span></button>
+    <button class="tab-btn" data-tab="pipeline">Pipeline</button>
     <button class="tab-btn" data-tab="system">System</button>
   </div>
 </div>
@@ -220,25 +290,92 @@ _UI_HTML = """<!DOCTYPE html>
 <!-- ══ TAB: Suggestions ══ -->
 <div class="tab-page active" id="page-suggestions">
   <div class="action-row">
-    <button class="action-btn primary" id="refresh-btn">⟳ Refresh</button>
-    <button class="action-btn" id="analyze-btn">🧠 Analyze</button>
+    <button class="action-btn primary" id="mine-now-btn">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+      Mine Now
+    </button>
   </div>
-  <div id="first-run-banner" style="display:none;background:linear-gradient(135deg,rgba(0,122,255,0.1),rgba(52,199,89,0.06));border:1px solid rgba(0,122,255,0.15);border-radius:14px;padding:20px;margin-bottom:16px;text-align:center;">
-    <div style="font-size:16px;font-weight:600;margin-bottom:8px;">🧠 No pattern analysis yet</div>
-    <div style="font-size:14px;color:#8E8E93;margin-bottom:14px;">Run a deep analysis to discover routines, correlations, and anomalies.</div>
-    <button class="action-btn primary" id="first-run-analyze" style="max-width:200px;margin:0 auto;">Analyze Now</button>
-  </div>
-  <div class="revelations" id="revelations"></div>
   <div id="list-container"></div>
 </div>
 
-<!-- ══ TAB: Discoveries ══ -->
-<div class="tab-page" id="page-discoveries">
-  <div class="action-row">
-    <button class="action-btn" id="analyze-btn-2">🧠 Run Analysis</button>
+<!-- ══ TAB: Pipeline ══ -->
+<div class="tab-page" id="page-pipeline">
+
+  <!-- Status overview -->
+  <div class="sh">Status</div>
+  <div class="pipeline-card" id="pipeline-status-card">
+    <div class="pipeline-stat">
+      <div class="pipeline-stat-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 2A7 7 0 0 0 5 9C5 11.38 6.19 13.47 8 14.74V17A1 1 0 0 0 9 18H15A1 1 0 0 0 16 17V14.74C17.81 13.47 19 11.38 19 9A7 7 0 0 0 12 2M9 21A1 1 0 0 0 10 22H14A1 1 0 0 0 15 21V20H9V21M11 14H13V8H15L12 4L9 8H11V14Z"/></svg>
+      </div>
+      <div class="pipeline-stat-body">
+        <div class="pipeline-stat-title">Last Hourly Cycle</div>
+        <div class="pipeline-stat-val" id="ps-hourly-val">Never</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-sug-count">—</div>
+    </div>
+    <div class="pipeline-stat">
+      <div class="pipeline-stat-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M11,7V13L15.25,15.58L16,14.33L12.5,12.25V7H11Z"/></svg>
+      </div>
+      <div class="pipeline-stat-body">
+        <div class="pipeline-stat-title">Last Waste Check</div>
+        <div class="pipeline-stat-val" id="ps-waste-val">Never</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-noticed-count">—</div>
+    </div>
   </div>
-  <div id="disc-trends"></div>
-  <div id="disc-patterns"></div>
+  <div class="action-row">
+    <button class="action-btn primary" id="mine-now-btn-2">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+      Mine Now
+    </button>
+  </div>
+
+  <!-- Mining settings -->
+  <div class="sh">Mining Settings</div>
+  <div class="pipeline-card" id="pipeline-settings-card">
+    <div class="pipeline-settings-row">
+      <div class="pipeline-settings-info">
+        <div class="pipeline-settings-name">Minimum repetitions</div>
+        <div class="pipeline-settings-desc">How many times a pattern must repeat in 30d to be considered.</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-min-occ">—</div>
+    </div>
+    <div class="pipeline-settings-row">
+      <div class="pipeline-settings-info">
+        <div class="pipeline-settings-name">Minimum confidence</div>
+        <div class="pipeline-settings-desc">Minimum P(action|trigger) — higher = stricter.</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-min-conf">—</div>
+    </div>
+    <div class="pipeline-settings-row">
+      <div class="pipeline-settings-info">
+        <div class="pipeline-settings-name">History window</div>
+        <div class="pipeline-settings-desc">How many days of history to mine each cycle.</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-hist-days">—</div>
+    </div>
+    <div class="pipeline-settings-row">
+      <div class="pipeline-settings-info">
+        <div class="pipeline-settings-name">Mining interval</div>
+        <div class="pipeline-settings-desc">How often the main miners run.</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-mine-int">—</div>
+    </div>
+    <div class="pipeline-settings-row">
+      <div class="pipeline-settings-info">
+        <div class="pipeline-settings-name">Waste check interval</div>
+        <div class="pipeline-settings-desc">How often the waste detector checks current state.</div>
+      </div>
+      <div class="pipeline-row-value" id="ps-waste-int">—</div>
+    </div>
+  </div>
+  <a class="ha-settings-link" href="/hassio/addon/smart_suggestions/config" target="_top">
+    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z"/></svg>
+    Edit in HA Settings
+  </a>
+
 </div>
 
 <!-- ══ TAB: System ══ -->
@@ -251,33 +388,41 @@ _UI_HTML = """<!DOCTYPE html>
     <div class="sh" style="padding-top:20px;">Blocked Entities</div>
     <div class="entity-list" id="deny-content"></div>
   </div>
-  <div class="sh" style="padding-top:20px;">Live Logs <button id="log-clear" style="background:none;border:none;color:#636366;font-size:11px;cursor:pointer;float:right;">Clear</button></div>
+  <div class="sh" style="padding-top:20px;">Live Logs <button id="log-clear" style="background:none;border:none;color:var(--disabled-text-color,#636366);font-size:11px;cursor:pointer;float:right;">Clear</button></div>
   <div class="log-box" id="log-box"><span class="log-empty">No logs yet.</span></div>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-const BASE = location.pathname.replace(/\/+$/, '');
+const BASE = location.pathname.replace(/\\/+$/, '');
 let _feedback = __FEEDBACK__;
 let _suggestions = __SUGGESTIONS__;
 let _entities = [];
 let _status = 'idle';
-let _patterns = null;
+let _systemStatus = null;
 let _denyList = new Set();
-let _newPatternKeys = new Set();
-let _seenRevelations = new Set(JSON.parse(localStorage.getItem('seenRevelations') || '[]'));
-let _dismissedPatterns = new Set(JSON.parse(sessionStorage.getItem('dismissedPatterns') || '[]'));
 let _logs = [];
 const MAX_LOG_LINES = 200;
 let _entitiesLoaded = false;
+let _miningInFlight = false;
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function net(eid) { const f=_feedback[eid]; return f?(f.up||0)-(f.down||0):0; }
 function pct(v) { return Math.round((v||0)*100)+'%'; }
 function domainEmoji(eid) {
   const d=(eid||'').split('.')[0];
   return {light:'💡',switch:'🔌',climate:'🌡️',media_player:'📺',cover:'🪟',fan:'💨',lock:'🔒',vacuum:'🤖',scene:'🎨',automation:'🤖',script:'📜',input_boolean:'🔘'}[d]||'⚙️';
+}
+
+// ── Relative time helper ──
+function relTime(iso) {
+  if (!iso) return null;
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 5) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + ' min ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
 }
 
 // ── Tab navigation ──
@@ -287,8 +432,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('page-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'discoveries') { renderDiscoveries(); renderTrends(); }
-    if (btn.dataset.tab === 'system') { refreshStatus(); if (!_entitiesLoaded) { loadEntities().then(() => renderEntities('')); } renderLogs(); }
+    if (btn.dataset.tab === 'pipeline') { refreshPipelineStatus(); }
+    if (btn.dataset.tab === 'system') { refreshSystemStatus(); if (!_entitiesLoaded) { loadEntities().then(() => renderEntities('')); } renderLogs(); }
   });
 });
 
@@ -305,7 +450,11 @@ function stateColor(state) {
   if (['error','unavailable'].includes(s)) return '#f44336';
   return '#FFB300';
 }
-function makeRow(s, i) {
+
+const THUMB_UP_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M5,9V21H1V9H5M9,21A2,2 0 0,1 7,19V9C7,8.45 7.22,7.95 7.59,7.59L14.17,1L15.23,2.06C15.5,2.33 15.67,2.7 15.67,3.11L15.64,3.43L14.69,8H21C22.11,8 23,8.89 23,10V12C23,12.26 22.95,12.5 22.86,12.73L19.84,19.78C19.54,20.5 18.83,21 18,21H9Z"/></svg>';
+const THUMB_DOWN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19,15H23V3H19M15,3H6C5.17,3 4.46,3.5 4.16,4.22L1.14,11.27C1.05,11.5 1,11.74 1,12V14A2,2 0 0,0 3,16H9.31L8.36,20.57C8.34,20.67 8.33,20.77 8.33,20.88C8.33,21.3 8.5,21.67 8.77,21.94L9.83,23L16.41,16.41C16.78,16.05 17,15.55 17,15V5C17,3.89 16.1,3 15,3Z"/></svg>';
+
+function makeRow(s) {
   const cur = s.current_state || '?';
   const act = s.action || '';
   return `<div class="sug">
@@ -321,35 +470,42 @@ function makeRow(s, i) {
       <div class="sug-reason">${escHtml(s.reason || '')}</div>
     </div>
     <div class="sug-actions">
-      <button class="vote-btn up" data-eid="${s.entity_id}" data-vote="up">👍</button>
-      <button class="vote-btn down" data-eid="${s.entity_id}" data-vote="down">👎</button>
-      <button class="deny-btn" data-eid="${s.entity_id}" title="Block">🚫</button>
+      <button class="vote-btn up" data-eid="${escHtml(s.entity_id)}" data-vote="up">${THUMB_UP_SVG}</button>
+      <button class="vote-btn down" data-eid="${escHtml(s.entity_id)}" data-vote="down">${THUMB_DOWN_SVG}</button>
+      <button class="deny-btn" data-eid="${escHtml(s.entity_id)}" title="Block">🚫</button>
     </div>
   </div>`;
 }
 
 function render() {
   const dot = document.getElementById('status-dot');
+  dot.className = 'status-dot' + (_status === 'updating' || _miningInFlight ? ' updating' : '');
   const metaEl = document.getElementById('meta-text');
-  dot.className = 'status-dot' + (_status === 'updating' ? ' updating' : '');
-  metaEl.textContent = (_status === 'updating' ? 'Updating…' : _status === 'ready' ? 'Ready' : 'Idle') + ' · ' + new Date().toLocaleTimeString();
+  metaEl.textContent = _miningInFlight ? 'Mining…' : (_status === 'updating' ? 'Updating…' : _status === 'ready' ? 'Ready' : 'Idle');
   const container = document.getElementById('list-container');
   if (!_suggestions.length) {
-    container.innerHTML = '<div class="empty"><div class="empty-icon">✨</div>No suggestions yet.</div>';
+    const hasCycled = _systemStatus && _systemStatus.last_hourly_completed_at;
+    if (hasCycled) {
+      container.innerHTML = '<div class="empty"><svg viewBox="0 0 24 24" width="44" height="44"><path fill="currentColor" d="M12 2A7 7 0 0 0 5 9C5 11.38 6.19 13.47 8 14.74V17A1 1 0 0 0 9 18H15A1 1 0 0 0 16 17V14.74C17.81 13.47 19 11.38 19 9A7 7 0 0 0 12 2M9 21A1 1 0 0 0 10 22H14A1 1 0 0 0 15 21V20H9V21M11 14H13V8H15L12 4L9 8H11V14Z"/></svg>No suggestions found.<div class="empty-hint">Try lowering thresholds in <b>Pipeline → Mining Settings</b>.</div></div>';
+    } else {
+      container.innerHTML = '<div class="empty"><svg viewBox="0 0 24 24" width="44" height="44"><path fill="currentColor" d="M12 2A7 7 0 0 0 5 9C5 11.38 6.19 13.47 8 14.74V17A1 1 0 0 0 9 18H15A1 1 0 0 0 16 17V14.74C17.81 13.47 19 11.38 19 9A7 7 0 0 0 12 2M9 21A1 1 0 0 0 10 22H14A1 1 0 0 0 15 21V20H9V21M11 14H13V8H15L12 4L9 8H11V14Z"/></svg>Waiting for first mining cycle (runs hourly).<div class="empty-hint">Click <b>Mine Now</b> to trigger immediately.</div></div>';
+    }
     return;
   }
-  const buckets = { suggested:[], scene:[], stretch:[] };
-  _suggestions.forEach((s,i) => {
-    const d=(s.entity_id||'').split('.')[0];
-    const key=(s.section&&buckets[s.section])?s.section:d==='scene'?'scene':'suggested';
-    buckets[key].push({s,i});
+  const buckets = { suggestion:[], noticed:[], suggested:[], scene:[], stretch:[] };
+  _suggestions.forEach(s => {
+    const zone = s.zone || s.section || 'suggested';
+    const key = buckets[zone] ? zone : (((s.entity_id||'').split('.')[0]) === 'scene' ? 'scene' : 'suggested');
+    buckets[key].push(s);
   });
   container.innerHTML = [
+    {key:'suggestion',label:'Suggested for You'},
     {key:'suggested',label:'Suggested for You'},
+    {key:'noticed',label:'Noticed'},
     {key:'scene',label:'Scenes'},
     {key:'stretch',label:'Worth Trying'},
-  ].filter(({key})=>buckets[key].length).map(({key,label})=>
-    `<div class="sh">${label}</div><div class="sug-list">${buckets[key].map(({s,i})=>makeRow(s,i)).join('')}</div>`
+  ].filter(({key})=>buckets[key]&&buckets[key].length).map(({key,label})=>
+    `<div class="sh">${label}</div><div class="sug-list">${buckets[key].map(s=>makeRow(s)).join('')}</div>`
   ).join('');
   // Wire vote + deny buttons
   container.querySelectorAll('.vote-btn').forEach(btn => {
@@ -360,9 +516,9 @@ function render() {
         await fetch(BASE+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:eid,vote})});
         if(!_feedback[eid])_feedback[eid]={up:0,down:0};
         _feedback[eid][vote]=(_feedback[eid][vote]||0)+1;
-        showToast(vote==='up'?'👍 Upvoted':'👎 Downvoted');
+        showToast(vote==='up'?'Upvoted':'Downvoted');
         render();
-      } catch { showToast('⚠️ Vote failed'); }
+      } catch { showToast('Vote failed'); }
     });
   });
   container.querySelectorAll('.deny-btn').forEach(btn => {
@@ -370,198 +526,84 @@ function render() {
       const eid=btn.dataset.eid;
       try {
         await fetch(BASE+'/deny',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:eid})});
-        _denyList.add(eid); showToast('🚫 Blocked'); renderDenyPanel();
-      } catch { showToast('⚠️ Block failed'); }
+        _denyList.add(eid); showToast('Blocked'); renderDenyPanel();
+      } catch { showToast('Block failed'); }
     });
   });
 }
 
-// ── Action buttons ──
-async function triggerAnalyze(btn) {
-  const orig=btn.textContent;
-  btn.classList.add('loading'); btn.textContent='⏳ Analyzing…';
-  try { await fetch(BASE+'/analyze',{method:'POST'}); showToast('🧠 Analysis started'); }
-  catch { showToast('⚠️ Failed'); }
-  setTimeout(()=>{ btn.classList.remove('loading'); btn.textContent=orig; },3000);
-}
-document.getElementById('refresh-btn').addEventListener('click', async function() {
-  this.classList.add('loading'); this.textContent='…';
-  try { await fetch(BASE+'/refresh',{method:'POST'}); showToast('🔄 Refreshing'); }
-  catch { showToast('⚠️ Failed'); }
-  setTimeout(()=>{ this.classList.remove('loading'); this.textContent='⟳ Refresh'; },2000);
-});
-document.getElementById('analyze-btn').addEventListener('click', function(){ triggerAnalyze(this); });
-document.getElementById('analyze-btn-2').addEventListener('click', function(){ triggerAnalyze(this); });
-document.getElementById('first-run-analyze').addEventListener('click', function(){ triggerAnalyze(this); });
-
-function updateFirstRunBanner(s) {
-  const b=document.getElementById('first-run-banner');
-  if(b) b.style.display=(s&&s.last_analysis&&s.last_analysis!=='Never')?'none':'';
-}
-
-// ── Discoveries tab ──
-function renderDiscoveries() {
-  const el = document.getElementById('disc-patterns');
-  if (!_patterns) { el.innerHTML = '<div class="disc-empty">No pattern analysis yet. Hit Analyze to start.</div>'; return; }
-  const routines = (_patterns.routines||[]).filter(r=>!_dismissedPatterns.has('r_'+r.entity_id+'_'+(r.name||'')));
-  const correls = (_patterns.correlations||[]).filter(c=>!_dismissedPatterns.has('c_'+c.entity_a+'_'+c.entity_b));
-  const anomalies = (_patterns.anomalies||[]).filter(a=>!_dismissedPatterns.has('a_'+a.entity_id));
-  let html = '';
-  // Update tab count
-  const total = routines.length + correls.length + anomalies.length;
-  const countEl = document.getElementById('disc-count');
-  if (total > 0) { countEl.style.display = ''; countEl.textContent = total; } else { countEl.style.display = 'none'; }
-
-  if (routines.length) {
-    html += '<div class="sh">Routines</div>';
-    html += routines.map(r => {
-      const key = 'r_'+r.entity_id+'_'+(r.name||'');
-      const isNew = _newPatternKeys.has(key) && !_seenRevelations.has(key);
-      const days = Array.isArray(r.days)?r.days.join(' '):'';
-      return `<div class="disc-card routine${isNew?' new':''}" id="dc-${key}">
-        <div class="disc-top"><div class="disc-icon">🔁</div><div class="disc-info">
-          <div class="disc-name">${escHtml(r.name||r.entity_id)}</div>
-          <div class="disc-eid">${escHtml(r.entity_id)}</div>
-          <div class="disc-meta">${isNew?'<span class="badge badge-new">NEW</span>':''}${r.typical_time?`<span class="badge badge-time">⏰ ${r.typical_time}</span>`:''}${days?`<span class="badge badge-days">${days}</span>`:''}
-            <span class="badge badge-conf">${pct(r.confidence)}</span>${r.instances?`<span class="badge badge-inst">×${r.instances}</span>`:''}</div>
-        </div></div>
-        <div class="disc-actions">
-          <button class="disc-btn disc-btn-auto" data-key="${key}" data-eid="${escHtml(r.entity_id)}" data-name="${escHtml(r.name||r.entity_id)}" data-type="routine">Automate</button>
-          <button class="disc-btn disc-btn-nah" data-key="${key}" data-dismiss="1">Dismiss</button>
-        </div>
-      </div>`;
-    }).join('');
-  }
-  if (correls.length) {
-    html += '<div class="sh">Correlations</div>';
-    html += correls.map(c => {
-      const key = 'c_'+c.entity_a+'_'+c.entity_b;
-      const isNew = _newPatternKeys.has(key) && !_seenRevelations.has(key);
-      return `<div class="disc-card correlation${isNew?' new':''}" id="dc-${key}">
-        <div class="disc-top"><div class="disc-icon">🔗</div><div class="disc-info">
-          <div class="disc-name">${escHtml(c.entity_a)} → ${escHtml(c.entity_b)}</div>
-          <div class="disc-desc">${escHtml(c.pattern||'')}</div>
-          <div class="disc-meta">${isNew?'<span class="badge badge-new">NEW</span>':''}${c.window_minutes?`<span class="badge badge-time">within ${c.window_minutes}m</span>`:''}
-            <span class="badge badge-conf">${pct(c.confidence)}</span>${c.instances?`<span class="badge badge-inst">×${c.instances}</span>`:''}</div>
-        </div></div>
-        <div class="disc-actions">
-          <button class="disc-btn disc-btn-auto" data-key="${key}" data-eid="${escHtml(c.entity_b)}" data-eid-a="${escHtml(c.entity_a)}" data-name="${escHtml(c.pattern||c.entity_b)}" data-type="correlation">Automate</button>
-          <button class="disc-btn disc-btn-nah" data-key="${key}" data-dismiss="1">Dismiss</button>
-        </div>
-      </div>`;
-    }).join('');
-  }
-  if (anomalies.length) {
-    html += '<div class="sh">Anomalies</div>';
-    html += anomalies.map(a => {
-      const key = 'a_'+a.entity_id;
-      const isNew = _newPatternKeys.has(key) && !_seenRevelations.has(key);
-      const sevClass = 'badge-sev-'+(a.severity||'low');
-      return `<div class="disc-card anomaly${isNew?' new':''}" id="dc-${key}">
-        <div class="disc-top"><div class="disc-icon">🚨</div><div class="disc-info">
-          <div class="disc-name">${escHtml(a.entity_id)}</div>
-          <div class="disc-desc">${escHtml(a.description||'')}</div>
-          <div class="disc-meta">${isNew?'<span class="badge badge-new">NEW</span>':''}<span class="badge ${sevClass}">⚠️ ${a.severity||'low'}</span></div>
-        </div></div>
-        <div class="disc-actions">
-          <button class="disc-btn disc-btn-nah" data-key="${key}" data-dismiss="1">Dismiss</button>
-        </div>
-      </div>`;
-    }).join('');
-  }
-  if (!html) html = '<div class="disc-empty">All patterns reviewed!</div>';
-  el.innerHTML = html;
-  // Wire buttons
-  el.querySelectorAll('.disc-btn-nah[data-dismiss]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const key=btn.dataset.key;
-      _dismissedPatterns.add(key);
-      sessionStorage.setItem('dismissedPatterns', JSON.stringify([..._dismissedPatterns]));
-      const card=document.getElementById('dc-'+key);
-      if(card){card.style.transition='opacity 0.25s';card.style.opacity='0';}
-      setTimeout(()=>renderDiscoveries(),260);
-    });
-  });
-  el.querySelectorAll('.disc-btn-auto').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      btn.textContent='⏳'; btn.disabled=true;
-      try {
-        const suggestion={entity_id:btn.dataset.eid,name:btn.dataset.name,automation_context:{trigger_type:btn.dataset.type,entity_a:btn.dataset.eidA}};
-        await fetch(BASE+'/save_automation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({suggestion})});
-        showToast('🚀 Queued'); btn.textContent='✅';
-      } catch { showToast('⚠️ Failed'); btn.textContent='Automate'; btn.disabled=false; }
-    });
-  });
+// ── Mine Now ──
+async function triggerMineNow(btn) {
+  if (_miningInFlight) return;
+  _miningInFlight = true;
+  const orig = btn.innerHTML;
+  btn.classList.add('loading');
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg> Mining…';
+  // Update header chip
+  const chip = document.getElementById('cycle-chip');
+  chip.textContent = 'Mining…'; chip.className = 'cycle-chip mining'; chip.style.display = '';
+  render();
+  try {
+    await fetch(BASE+'/refresh_all', {method:'POST'});
+    showToast('Mining started — results appear when done');
+  } catch { showToast('Failed to trigger mining'); }
+  setTimeout(() => {
+    _miningInFlight = false;
+    btn.classList.remove('loading');
+    btn.innerHTML = orig;
+    chip.className = 'cycle-chip'; chip.style.display = 'none';
+    render();
+    refreshPipelineStatus();
+  }, 8000);
 }
 
-// ── Trends ──
-function renderTrends() {
-  if(!_patterns) return;
-  const routines=_patterns.routines||[], correlations=_patterns.correlations||[], anomalies=_patterns.anomalies||[];
-  const el=document.getElementById('disc-trends');
-  if(!routines.length&&!correlations.length&&!anomalies.length){ el.innerHTML=''; return; }
-  let html='<div class="sh">Trends & Insights</div><div class="trend-card">';
-  // Peak activity
-  const hourBuckets={};
-  routines.forEach(r=>{const h=parseInt((r.typical_time||'').split(':')[0],10);if(!isNaN(h))hourBuckets[h]=(hourBuckets[h]||0)+1;});
-  if(Object.keys(hourBuckets).length>1){
-    const peak=Object.entries(hourBuckets).sort((a,b)=>b[1]-a[1])[0];
-    const hr=parseInt(peak[0]);
-    const label=hr===0?'12 AM':hr<12?hr+' AM':hr===12?'12 PM':(hr-12)+' PM';
-    html+=`<div class="trend-row"><div class="trend-label" style="color:#4DA6FF;">⏰ Peak Activity</div><div class="trend-value">Most routines around <b style="color:#fff">${label}</b> (${peak[1]})</div></div>`;
-  }
-  // Top entities
-  const mentions={};
-  routines.forEach(r=>{mentions[r.entity_id]=(mentions[r.entity_id]||0)+1;});
-  correlations.forEach(c=>{mentions[c.entity_a]=(mentions[c.entity_a]||0)+1;mentions[c.entity_b]=(mentions[c.entity_b]||0)+1;});
-  const top5=Object.entries(mentions).sort((a,b)=>b[1]-a[1]).slice(0,5);
-  if(top5.length){
-    html+=`<div class="trend-row"><div class="trend-label" style="color:#34C759;">🏠 Most Active</div><div class="trend-value">${top5.map(([eid,c])=>`${domainEmoji(eid)} ${eid} — ${c}`).join('<br>')}</div></div>`;
-  }
-  // Weekly bars
-  const dayCounts={};
-  routines.forEach(r=>{(r.days||[]).forEach(d=>{dayCounts[d]=(dayCounts[d]||0)+1;});});
-  if(Object.keys(dayCounts).length){
-    const dayOrder=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    const maxC=Math.max(...Object.values(dayCounts),1);
-    const bars=dayOrder.map(d=>{
-      const c=dayCounts[d]||0; const p=Math.round(c/maxC*100);
-      return `<div class="bar-row"><span class="bar-label">${d}</span><div class="bar-track"><div class="bar-fill" style="width:${p}%;background:rgba(0,122,255,0.6)"></div></div><span class="bar-count">${c}</span></div>`;
-    }).join('');
-    html+=`<div class="trend-row"><div class="trend-label" style="color:#FF9F0A;">📊 Weekly Distribution</div>${bars}</div>`;
-  }
-  if(anomalies.length){
-    const hi=anomalies.filter(a=>a.severity==='high').length;
-    html+=`<div class="trend-row"><div class="trend-label" style="color:#FF3B30;">⚠️ Anomalies</div><div class="trend-value">${anomalies.length} detected${hi?` (${hi} high)`:''}</div></div>`;
-  }
-  html+='</div>';
-  el.innerHTML=html;
-}
+const mineBtn1 = document.getElementById('mine-now-btn');
+const mineBtn2 = document.getElementById('mine-now-btn-2');
+mineBtn1.addEventListener('click', function(){ triggerMineNow(this); });
+mineBtn2.addEventListener('click', function(){ triggerMineNow(this); });
 
-// ── Revelations (suggestions tab) ──
-function renderRevelations() {
-  const el=document.getElementById('revelations');
-  if(!_patterns||!_newPatternKeys.size){el.innerHTML='';return;}
-  const unseen=[..._newPatternKeys].filter(k=>!_seenRevelations.has(k));
-  if(!unseen.length){el.innerHTML='';return;}
-  const items=unseen.map(key=>{
-    if(key.startsWith('r_')){const r=(_patterns.routines||[]).find(r=>'r_'+r.entity_id+'_'+(r.name||'')===key);if(r)return `<div style="padding:4px 0;font-size:14px;color:#ddd;">🔁 <b>${escHtml(r.name||r.entity_id)}</b> at ${r.typical_time||'?'}</div>`;}
-    else if(key.startsWith('c_')){const c=(_patterns.correlations||[]).find(c=>'c_'+c.entity_a+'_'+c.entity_b===key);if(c)return `<div style="padding:4px 0;font-size:14px;color:#ddd;">🔗 ${escHtml(c.pattern||c.entity_a+' → '+c.entity_b)}</div>`;}
-    else if(key.startsWith('a_')){const a=(_patterns.anomalies||[]).find(a=>'a_'+a.entity_id===key);if(a)return `<div style="padding:4px 0;font-size:14px;color:#ddd;">🚨 <b>${escHtml(a.entity_id)}</b> — ${escHtml(a.description||'')}</div>`;}
-    return '';
-  }).filter(Boolean);
-  if(!items.length){el.innerHTML='';return;}
-  el.innerHTML=`<div style="background:linear-gradient(135deg,rgba(175,82,222,0.1),rgba(0,122,255,0.06));border:1px solid rgba(175,82,222,0.2);border-radius:14px;padding:16px;margin-bottom:16px;animation:revealIn 0.4s ease-out;">
-    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#BF7AF0;margin-bottom:8px;">✨ New Discoveries</div>
-    ${items.join('')}
-    <button id="dismiss-revelations" style="background:none;border:none;color:#636366;font-size:12px;cursor:pointer;margin-top:8px;padding:4px 0;">Mark as seen</button>
-  </div>`;
-  document.getElementById('dismiss-revelations').addEventListener('click',()=>{
-    unseen.forEach(k=>_seenRevelations.add(k));
-    localStorage.setItem('seenRevelations',JSON.stringify([..._seenRevelations]));
-    el.innerHTML='';
-  });
+// ── Pipeline status ──
+async function refreshPipelineStatus() {
+  try {
+    const r = await fetch(BASE+'/status');
+    const s = await r.json();
+    _systemStatus = s;
+    // Hourly cycle
+    const hourlyEl = document.getElementById('ps-hourly-val');
+    const rt = relTime(s.last_hourly_completed_at);
+    if (hourlyEl) hourlyEl.textContent = rt || 'Never';
+    // Waste check
+    const wasteEl = document.getElementById('ps-waste-val');
+    const wrt = relTime(s.last_waste_check_at);
+    if (wasteEl) wasteEl.textContent = wrt || 'Never';
+    // Counts
+    const sugCount = document.getElementById('ps-sug-count');
+    if (sugCount) sugCount.textContent = (s.suggestion_zone_count !== undefined ? s.suggestion_zone_count : '—') + ' 💡';
+    const noticeCount = document.getElementById('ps-noticed-count');
+    if (noticeCount) noticeCount.textContent = (s.noticed_zone_count !== undefined ? s.noticed_zone_count : '—') + ' ⚠️';
+    // Update header chip with last cycle time
+    const chip = document.getElementById('cycle-chip');
+    if (rt && !_miningInFlight) {
+      chip.textContent = 'Last cycle: ' + rt;
+      chip.className = 'cycle-chip';
+      chip.style.display = '';
+    }
+    // Mining settings
+    const ms = s.mining_settings || {};
+    const setVal = (id, key, suffix) => {
+      const el = document.getElementById(id);
+      if (el && ms[key]) el.textContent = ms[key].value + (suffix||'');
+    };
+    setVal('ps-min-occ', 'min_pattern_occurrences', ' ×');
+    setVal('ps-min-conf', 'min_pattern_confidence', '');
+    setVal('ps-hist-days', 'mining_history_days', 'd');
+    setVal('ps-mine-int', 'mining_interval_hours', 'h');
+    setVal('ps-waste-int', 'waste_check_interval_minutes', 'm');
+  } catch (e) {
+    _LOGGER_JS_WARN('refreshPipelineStatus failed: ' + e);
+  }
 }
+function _LOGGER_JS_WARN(msg) { /* swallow */ }
 
 // ── System tab ──
 function renderStatusGrid(s) {
@@ -572,14 +614,19 @@ function renderStatusGrid(s) {
     <div class="sys-card"><div class="sys-label">HA</div><div class="sys-val">${ok(s.ha_connected)} ${s.ha_connected?'Connected':'Down'}</div></div>
     <div class="sys-card"><div class="sys-label">AI / Ollama</div><div class="sys-val">${ok(s.ollama_connected)} ${s.ollama_connected?'Connected':'Down'}</div></div>
     <div class="sys-card"><div class="sys-label">Entities</div><div class="sys-val">${s.entity_count||0}</div></div>
-    <div class="sys-card"><div class="sys-label">Patterns</div><div class="sys-val">${s.patterns_loaded?`${s.pattern_routines} routines`:'None'}</div></div>
+    <div class="sys-card"><div class="sys-label">Suggestions</div><div class="sys-val">${(s.suggestion_zone_count||0)+(s.noticed_zone_count||0)}</div></div>
     <div class="sys-card"><div class="sys-label">Last Refresh</div><div class="sys-val">${s.last_refresh||'Never'}</div></div>
-    <div class="sys-card"><div class="sys-label">Last Analysis</div><div class="sys-val">${s.last_analysis||'Never'}</div></div>
+    <div class="sys-card"><div class="sys-label">Last Mining</div><div class="sys-val">${relTime(s.last_hourly_completed_at)||'Never'}</div></div>
   `;
 }
 
-async function refreshStatus() {
-  try { const r=await fetch(BASE+'/status'); const s=await r.json(); renderStatusGrid(s); updateFirstRunBanner(s); } catch {}
+async function refreshSystemStatus() {
+  try {
+    const r=await fetch(BASE+'/status');
+    const s=await r.json();
+    _systemStatus = s;
+    renderStatusGrid(s);
+  } catch {}
 }
 
 // ── Entity inject ──
@@ -596,14 +643,14 @@ function renderEntities(filter) {
   if(!matches.length){el.innerHTML='<div class="no-results">No entities found</div>';return;}
   el.innerHTML=matches.map(e=>`
     <div class="entity-row">
-      <div class="entity-info"><div class="entity-name">${domainEmoji(e.entity_id)} ${e.name||e.entity_id}</div><div class="entity-id">${e.entity_id} · ${e.current_state||''}</div></div>
-      <button class="add-btn" data-eid="${e.entity_id}" data-name="${(e.name||e.entity_id).replace(/"/g,'&quot;')}" data-domain="${e.domain||''}">Add</button>
+      <div class="entity-info"><div class="entity-name">${domainEmoji(e.entity_id)} ${escHtml(e.name||e.entity_id)}</div><div class="entity-id">${escHtml(e.entity_id)} · ${escHtml(e.current_state||'')}</div></div>
+      <button class="add-btn" data-eid="${escHtml(e.entity_id)}" data-name="${escHtml((e.name||e.entity_id))}" data-domain="${escHtml(e.domain||'')}">Add</button>
     </div>`).join('');
   el.querySelectorAll('.add-btn').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       btn.textContent='✓'; btn.disabled=true;
-      try { await fetch(BASE+'/inject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:btn.dataset.eid,name:btn.dataset.name,domain:btn.dataset.domain})}); showToast('✅ Added'); }
-      catch { showToast('⚠️ Failed'); btn.textContent='Add'; btn.disabled=false; }
+      try { await fetch(BASE+'/inject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:btn.dataset.eid,name:btn.dataset.name,domain:btn.dataset.domain})}); showToast('Added'); }
+      catch { showToast('Failed'); btn.textContent='Add'; btn.disabled=false; }
     });
   });
 }
@@ -615,19 +662,19 @@ function renderDenyPanel() {
   sec.style.display='';
   const el=document.getElementById('deny-content');
   el.innerHTML=[..._denyList].sort().map(eid=>`
-    <div class="deny-row"><span>${domainEmoji(eid)}</span><span class="deny-eid">${eid}</span>
-    <button class="undeny-btn" data-eid="${eid}">Unblock</button></div>`).join('');
+    <div class="deny-row"><span>${domainEmoji(eid)}</span><span class="deny-eid">${escHtml(eid)}</span>
+    <button class="undeny-btn" data-eid="${escHtml(eid)}">Unblock</button></div>`).join('');
   el.querySelectorAll('.undeny-btn').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
-      try { await fetch(BASE+'/deny',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:btn.dataset.eid})}); _denyList.delete(btn.dataset.eid); showToast('✅ Unblocked'); renderDenyPanel(); }
-      catch { showToast('⚠️ Failed'); }
+      try { await fetch(BASE+'/deny',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:btn.dataset.eid})}); _denyList.delete(btn.dataset.eid); showToast('Unblocked'); renderDenyPanel(); }
+      catch { showToast('Failed'); }
     });
   });
 }
 
 // ── Logs ──
 document.getElementById('log-clear').addEventListener('click',()=>{_logs=[];renderLogs();});
-function makeLogLine(e){return `<div class="log-line"><span class="log-ts">${e.ts}</span><span class="log-lvl ${e.level}">${e.level}</span><span class="log-msg">${escHtml(e.msg)}</span></div>`;}
+function makeLogLine(e){return `<div class="log-line"><span class="log-ts">${escHtml(e.ts)}</span><span class="log-lvl ${escHtml(e.level)}">${escHtml(e.level)}</span><span class="log-msg">${escHtml(e.msg)}</span></div>`;}
 function renderLogs(){
   const box=document.getElementById('log-box');
   if(!_logs.length){box.innerHTML='<span class="log-empty">No logs yet.</span>';return;}
@@ -650,23 +697,16 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
 function connectWS(){
   const proto=location.protocol==='https:'?'wss:':'ws:';
   const ws=new WebSocket(proto+'//'+location.host+BASE+'/ws');
-  ws.addEventListener('open',()=>{document.getElementById('meta-text').textContent='Connected';});
+  ws.addEventListener('open',()=>{
+    document.getElementById('meta-text').textContent='Connected';
+    refreshPipelineStatus();
+  });
   ws.addEventListener('message',evt=>{
     let msg; try{msg=JSON.parse(evt.data);}catch{return;}
     if(msg.type==='suggestions'){_suggestions=Array.isArray(msg.data)?msg.data:[];_status='ready';render();}
     else if(msg.type==='status'){_status=msg.state||'idle';render();}
     else if(msg.type==='log'){appendLog(msg);}
-    else if(msg.type==='system_status'){renderStatusGrid(msg.data);updateFirstRunBanner(msg.data);}
-    else if(msg.type==='patterns'){
-      _patterns=msg.data;
-      if(msg.new_keys&&msg.new_keys.length){msg.new_keys.forEach(k=>_newPatternKeys.add(k));renderRevelations();}
-      // Update discoveries tab if visible
-      if(document.getElementById('page-discoveries').classList.contains('active')){renderDiscoveries();renderTrends();}
-      // Update tab count
-      const total=(_patterns.routines||[]).length+(_patterns.correlations||[]).length+(_patterns.anomalies||[]).length;
-      const ct=document.getElementById('disc-count');
-      if(total>0){ct.style.display='';ct.textContent=total;}else{ct.style.display='none';}
-    }
+    else if(msg.type==='system_status'){_systemStatus=msg.data;renderStatusGrid(msg.data);}
     else if(msg.type==='deny_list'){_denyList=new Set(msg.data||[]);renderDenyPanel();}
   });
   ws.addEventListener('close',()=>{
@@ -680,7 +720,6 @@ function connectWS(){
 render();
 renderDenyPanel();
 connectWS();
-// Load logs in background
 fetch(BASE+'/logs').then(r=>r.json()).then(d=>{_logs=d;}).catch(()=>{});
 </script>
 </body>
@@ -728,6 +767,8 @@ class WSServer:
         self._usage_log = None
         self._automation_builder = None
         self._ha_client = None
+        self._pipeline_state: dict = {}
+        self._addon_opts: dict = {}
 
     def register_feedback_handler(self, cb) -> None:
         self._feedback_cb = cb
@@ -761,6 +802,11 @@ class WSServer:
 
     def set_ha_client(self, ha_client) -> None:
         self._ha_client = ha_client
+
+    def set_pipeline_state(self, state: dict, opts: dict) -> None:
+        """Store a reference to the live pipeline state dict and addon options."""
+        self._pipeline_state = state
+        self._addon_opts = opts
 
     async def _handle_client_message(self, msg: dict, ws=None) -> None:
         msg_type = msg.get("type")
@@ -934,7 +980,36 @@ class WSServer:
         return web.json_response(list(self._log_buffer))
 
     async def _status_handler(self, request: web.Request) -> web.Response:
-        return web.json_response(self._system_status)
+        ps = self._pipeline_state
+        opts = self._addon_opts
+        payload = dict(self._system_status)
+        payload["last_hourly_completed_at"] = ps.get("last_hourly_at")
+        payload["last_waste_check_at"] = ps.get("last_waste_at")
+        payload["suggestion_zone_count"] = len(ps.get("last_suggestion_zone", []))
+        payload["noticed_zone_count"] = len(ps.get("last_noticed_zone", []))
+        payload["mining_settings"] = {
+            "min_pattern_occurrences": {
+                "value": opts.get("min_pattern_occurrences", 5),
+                "desc": "How many times a pattern must repeat in 30d to be considered.",
+            },
+            "min_pattern_confidence": {
+                "value": opts.get("min_pattern_confidence", 0.7),
+                "desc": "Minimum P(action|trigger) — higher = stricter.",
+            },
+            "mining_history_days": {
+                "value": opts.get("mining_history_days", 30),
+                "desc": "How many days of history to mine each cycle.",
+            },
+            "mining_interval_hours": {
+                "value": opts.get("mining_interval_hours", 1),
+                "desc": "How often the main miners run.",
+            },
+            "waste_check_interval_minutes": {
+                "value": opts.get("waste_check_interval_minutes", 5),
+                "desc": "How often the waste detector checks current state.",
+            },
+        }
+        return web.json_response(payload)
 
     async def _analyze_handler(self, request: web.Request) -> web.Response:
         if self._analyze_cb:

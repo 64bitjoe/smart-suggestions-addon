@@ -79,6 +79,7 @@ async def mine_and_emit_suggestions(
     combined = state["last_suggestion_zone"] + state.get("last_noticed_zone", [])
     await ha_client.write_suggestions(combined)
     state["hourly_completed"] = True
+    state["last_hourly_at"] = datetime.now(timezone.utc).isoformat()
 
 
 async def mine_and_emit_waste_only(
@@ -119,6 +120,7 @@ async def mine_and_emit_waste_only(
 
     combined = state.get("last_suggestion_zone", []) + state["last_noticed_zone"]
     await ha_client.write_suggestions(combined)
+    state["last_waste_at"] = datetime.now(timezone.utc).isoformat()
 
 
 async def hourly_mining_loop(
@@ -230,10 +232,14 @@ class SmartSuggestionsAddon:
         self._last_refresh_str: str = "Never"
         self._last_analysis_str: str = "Never"
         self._anthropic_client = None
+        self._db_reader: DbReader | None = None
+        self._llm_describer: LlmDescriber | None = None
         self._pipeline_state: dict = {
             "last_suggestion_zone": [],
             "last_noticed_zone": [],
             "hourly_completed": False,
+            "last_hourly_at": None,
+            "last_waste_at": None,
         }
 
     def _push_system_status(self) -> None:
@@ -436,19 +442,31 @@ class SmartSuggestionsAddon:
             asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
     async def _on_trigger_refresh_all(self) -> None:
-        """Re-fetch states then refresh suggestions."""
-        _LOGGER.info("Refresh All triggered")
-        if not self._ha:
+        """User-initiated trigger — runs the full mining pipeline immediately."""
+        _LOGGER.info("Mine Now triggered")
+        if not self._db_reader or not self._llm_describer or not self._ha:
+            _LOGGER.warning("Mine Now: pipeline not ready yet (db_reader=%s, llm_describer=%s, ha=%s)",
+                            self._db_reader, self._llm_describer, self._ha)
             return
         try:
-            await self._ha._fetch_states()
-            states = self._last_states
-            if not states:
-                return
-            await self._run_refresh_cycle(states)
-            _LOGGER.info("Refresh All complete")
-        except Exception as e:
-            _LOGGER.error("Refresh All error: %s", e)
+            await mine_and_emit_suggestions(
+                self._db_reader,
+                self._dismissal_store,
+                self._llm_describer,
+                self._ha,
+                self._pipeline_state,
+            )
+            # Also run a waste check immediately since hourly_completed is now True.
+            await mine_and_emit_waste_only(
+                self._db_reader,
+                self._dismissal_store,
+                self._llm_describer,
+                self._ha,
+                self._pipeline_state,
+            )
+            _LOGGER.info("Mine Now complete")
+        except Exception:
+            _LOGGER.exception("Mine Now failed")
 
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions starting")
@@ -483,17 +501,18 @@ class SmartSuggestionsAddon:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
-        _db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
+        self._db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
         self._anthropic_client = _anthropic.AsyncAnthropic(
             api_key=self._opts.get("ai_api_key", "")
         )
-        _llm_describer = LlmDescriber(
+        self._llm_describer = LlmDescriber(
             client=self._anthropic_client,
             cache_path="/data/llm_cache.db",
             model=self._opts.get("ai_model", "claude-haiku-4-5-20251001"),
         )
-        loop.create_task(hourly_mining_loop(_db_reader, self._dismissal_store, _llm_describer, self._ha, self._pipeline_state))
-        loop.create_task(waste_check_loop(_db_reader, self._dismissal_store, _llm_describer, self._ha, self._pipeline_state))
+        self._ws_server.set_pipeline_state(self._pipeline_state, self._opts)
+        loop.create_task(hourly_mining_loop(self._db_reader, self._dismissal_store, self._llm_describer, self._ha, self._pipeline_state))
+        loop.create_task(waste_check_loop(self._db_reader, self._dismissal_store, self._llm_describer, self._ha, self._pipeline_state))
 
         await self._ha.start()  # blocks forever — keeps event loop alive
 
