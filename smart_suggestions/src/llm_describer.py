@@ -1,0 +1,123 @@
+from __future__ import annotations
+import aiosqlite
+import json
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from candidate import Candidate
+
+
+DEFAULT_TTL = timedelta(days=7)
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
+
+@dataclass(frozen=True)
+class Description:
+    title: str
+    description: str
+    automation_yaml: str
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _build_prompt(c: Candidate) -> str:
+    return f"""You generate Home Assistant automation suggestions from already-validated patterns.
+Pattern: {c.miner_type.value}
+Entity: {c.entity_id}
+Action: {c.action}
+Details: {json.dumps(c.details, sort_keys=True)}
+Occurrences: {c.occurrences}
+Conditional probability: {c.conditional_prob:.2f}
+
+Respond with a single JSON object with keys: title (string, ≤60 chars), description (string, one sentence), automation_yaml (string, valid HA automation YAML — alias, trigger, action). No prose, no markdown fences. Just JSON.
+"""
+
+
+class LlmDescriber:
+    def __init__(
+        self,
+        client,
+        cache_path: str | Path,
+        model: str = DEFAULT_MODEL,
+        ttl: timedelta = DEFAULT_TTL,
+    ):
+        self.client = client
+        self.cache_path = Path(cache_path)
+        self.model = model
+        self.ttl = ttl
+        self._initialized = False
+
+    async def init(self):
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(self.cache_path) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS llm_cache (
+                    signature TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    automation_yaml TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            """)
+            await db.commit()
+        self._initialized = True
+
+    async def _ensure_initialized(self):
+        if not self._initialized:
+            await self.init()
+
+    async def describe(self, candidate: Candidate) -> Description:
+        await self._ensure_initialized()
+        sig = candidate.signature()
+        cached = await self._get_cached(sig)
+        if cached:
+            return cached
+
+        prompt = _build_prompt(candidate)
+        resp = await self.client.messages.create(
+            model=self.model,
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"LLM returned non-JSON: {text!r}") from e
+
+        desc = Description(
+            title=payload["title"],
+            description=payload["description"],
+            automation_yaml=payload["automation_yaml"],
+        )
+        await self._store(sig, desc)
+        return desc
+
+    async def _get_cached(self, sig: str) -> Description | None:
+        cutoff = (_now() - self.ttl).timestamp()
+        async with aiosqlite.connect(self.cache_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM llm_cache WHERE signature = ? AND created_at >= ?",
+                (sig, cutoff),
+            )
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        return Description(
+            title=row["title"],
+            description=row["description"],
+            automation_yaml=row["automation_yaml"],
+        )
+
+    async def _store(self, sig: str, desc: Description):
+        async with aiosqlite.connect(self.cache_path) as db:
+            await db.execute(
+                """INSERT OR REPLACE INTO llm_cache
+                   (signature, title, description, automation_yaml, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (sig, desc.title, desc.description, desc.automation_yaml, _now().timestamp()),
+            )
+            await db.commit()
