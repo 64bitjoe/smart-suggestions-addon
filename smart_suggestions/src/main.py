@@ -9,10 +9,6 @@ import logging
 import signal
 from datetime import datetime, timedelta, timezone
 
-from pattern_store import PatternStore
-from statistical_engine import StatisticalEngine
-from scene_engine import SceneEngine
-from narrator import OllamaNarrator, AINarrator
 from automation_builder import AutomationBuilder
 from ha_client import HAClient
 from usage_log import UsageLog
@@ -184,36 +180,10 @@ class SmartSuggestionsAddon:
         self._opts = opts
         self._dismissal_store = DismissalStore(db_path="/data/dismissals.db")
         self._ws_server = WSServer(dismissal_store=self._dismissal_store)
-        self._pattern_store = PatternStore()
-        self._stat_engine = StatisticalEngine(
-            self._pattern_store,
-            confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
-            allowed_domains=opts.get("domains") or None,
-            max_entities=int(opts.get("max_entities", 150)),
-        )
-        self._scene_engine = SceneEngine(
-            max_suggestions=int(opts.get("max_suggestions", 7)),
-            confidence_threshold=float(opts.get("pattern_confidence_threshold", 0.6)),
-        )
         _key = opts.get("ai_api_key", "")
         _ai_model = opts.get("ai_model", "claude-haiku-4-5-20251001")
-        narrator_provider = opts.get("narrator_provider", "ai" if _key else "ollama")
-        if narrator_provider == "ai" and _key:
-            self._narrator = AINarrator(
-                ai_provider=opts.get("ai_provider", "anthropic"),
-                ai_api_key=_key,
-                ai_model=_ai_model,
-                ai_base_url=opts.get("ai_base_url", ""),
-            )
-            _LOGGER.info("Narrator: using %s/%s", opts.get("ai_provider", "anthropic"), _ai_model)
-        else:
-            self._narrator = OllamaNarrator(
-                ollama_url=opts.get("ollama_url", "http://localhost:11434"),
-                model=opts.get("ollama_model", "qwen3:8b"),
-            )
-            _LOGGER.info("Narrator: using Ollama at %s", opts.get("ollama_url", "http://localhost:11434"))
         _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
-        _LOGGER.info("Model: narration=%s", _ai_model)
+        _LOGGER.info("Model: %s", _ai_model)
         self._automation_builder = AutomationBuilder(
             ai_provider=opts.get("ai_provider", "anthropic"),
             ai_api_key=_key,
@@ -223,14 +193,10 @@ class SmartSuggestionsAddon:
         self._usage_log = UsageLog("/data/usage.db")
         self._deny_set: set[str] = self._load_deny_list()
         self._ha: HAClient | None = None
-        self._refresh_lock = asyncio.Lock()
-        self._last_suggestions: list = []
         self._last_states: dict = {}
         self._running = True
         self._ha_connected: bool = False
-        self._ollama_connected: bool = False
         self._last_refresh_str: str = "Never"
-        self._last_analysis_str: str = "Never"
         self._anthropic_client = None
         self._db_reader: DbReader | None = None
         self._llm_describer: LlmDescriber | None = None
@@ -245,27 +211,10 @@ class SmartSuggestionsAddon:
     def _push_system_status(self) -> None:
         status = {
             "ha_connected": self._ha_connected,
-            "ollama_connected": self._ollama_connected,
-            "ollama_url": self._opts.get("ollama_url", ""),
-            "ollama_model": self._opts.get("ollama_model", ""),
             "entity_count": len(self._last_states),
             "last_refresh": self._last_refresh_str,
-            "last_analysis": self._last_analysis_str,
-            "patterns_loaded": bool(self._pattern_store.get_routines()),
-            "pattern_routines": len(self._pattern_store.get_routines()),
-            "feedback_count": 0,
-            "pattern_anomalies": len(self._pattern_store.get_active_anomalies()),
         }
         self._ws_server.set_system_status(status)
-
-    def _push_stored_patterns(self) -> None:
-        patterns = {
-            "routines": self._pattern_store.get_routines(),
-            "correlations": self._pattern_store.get_correlations(),
-            "anomalies": self._pattern_store.get_active_anomalies(),
-        }
-        if any(patterns.values()):
-            self._ws_server.set_patterns(patterns)
 
     @staticmethod
     def _load_deny_list() -> set[str]:
@@ -283,151 +232,23 @@ class SmartSuggestionsAddon:
     async def _on_deny_entity(self, entity_id: str) -> None:
         self._deny_set.add(entity_id)
         self._save_deny_list()
-        _LOGGER.info("Entity denied: %s (%d total)", entity_id, len(self._deny_set))
-        if self._last_states:
-            await self._run_refresh_cycle(self._last_states)
+        _LOGGER.info("Entity denied: %s (%d total) — will take effect on next mining cycle", entity_id, len(self._deny_set))
 
     async def _on_undeny_entity(self, entity_id: str) -> None:
         self._deny_set.discard(entity_id)
         self._save_deny_list()
         _LOGGER.info("Entity un-denied: %s (%d total)", entity_id, len(self._deny_set))
 
-    async def _build_narrator_context(self, states: dict) -> dict:
-        """Assemble rich context dict for the Ollama narrator."""
-        from datetime import datetime, timezone, timedelta
-
-        now = datetime.now(timezone.utc)
-        current_time = now.strftime("%H:%M on %A")
-
-        # Entities changed in last 60 minutes
-        recent_changes = []
-        cutoff = now - timedelta(minutes=60)
-        for eid, state in states.items():
-            lc = state.get("last_changed", "")
-            try:
-                changed = datetime.fromisoformat(lc.replace("Z", "+00:00"))
-                if changed >= cutoff:
-                    mins_ago = int((now - changed).total_seconds() / 60)
-                    recent_changes.append({
-                        "entity_id": eid,
-                        "state": state.get("state"),
-                        "changed_ago_minutes": mins_ago,
-                    })
-            except (ValueError, TypeError):
-                pass
-
-        # Motion / occupancy sensors
-        motion_sensors = []
-        for eid, state in states.items():
-            if eid.startswith("binary_sensor.") and any(
-                kw in eid for kw in ("motion", "occupancy", "presence")
-            ):
-                lc = state.get("last_changed", "")
-                mins_since = None
-                try:
-                    changed = datetime.fromisoformat(lc.replace("Z", "+00:00"))
-                    mins_since = int((now - changed).total_seconds() / 60)
-                except (ValueError, TypeError):
-                    pass
-                motion_sensors.append({
-                    "entity_id": eid,
-                    "state": state.get("state"),
-                    "minutes_since_triggered": mins_since,
-                })
-
-        # Presence
-        presence = [
-            eid for eid, s in states.items()
-            if eid.startswith("person.") and s.get("state") == "home"
-        ]
-
-        # Weather — check sensor first, then weather entity for condition
-        temp_val = None
-        condition_val = None
-        outdoor_temp = states.get("sensor.outdoor_temperature")
-        if outdoor_temp:
-            temp_val = outdoor_temp.get("state")
-        for eid, state in states.items():
-            if eid.startswith("weather."):
-                condition_val = state.get("state")
-                if temp_val is None:
-                    temp_val = state.get("attributes", {}).get("temperature")
-                break
-        weather = {"temperature": temp_val, "condition": condition_val} if (temp_val or condition_val) else None
-
-        # Avoided pairs from usage log
-        avoided = await self._usage_log.get_avoided_pairs(hours=24, limit=10)
-
-        # Existing automations
-        existing_automations: list[str] = []
-        if self._ha:
-            existing_automations = await self._ha.get_automations()
-
-        return {
-            "current_time": current_time,
-            "recent_changes": recent_changes[:10],
-            "motion_sensors": motion_sensors[:10],
-            "presence": presence,
-            "weather": weather,
-            "avoided_pairs": avoided,
-            "existing_automations": existing_automations[:30],
-        }
-
     async def _on_states_ready(self, states: dict) -> None:
         self._last_states = states
         if not self._ha_connected:
             self._ha_connected = True
             self._push_system_status()
-            self._push_stored_patterns()
-        await self._run_refresh_cycle(states)
-
-    async def _run_refresh_cycle(self, states: dict) -> None:
-        if self._refresh_lock.locked():
-            return
-        async with self._refresh_lock:
-            await self._ws_server.broadcast_status("updating")
-            try:
-                # Score candidates deterministically
-                candidates = self._stat_engine.score_realtime(states, deny_set=self._deny_set)
-                # Rank scenes first, apply feedback from UsageLog
-                entity_ids = [c["entity_id"] for c in candidates]
-                feedback_scores = await self._usage_log.get_feedback_scores(entity_ids)
-                ranked = self._scene_engine.rank(candidates, states, feedback_scores)
-                # Build rich context for narrator
-                context = await self._build_narrator_context(states)
-                # Narrate reasons (non-blocking: if Ollama fails, falls back to raw reasons)
-                try:
-                    ranked = await asyncio.wait_for(
-                        self._narrator.narrate(ranked, context=context), timeout=20.0
-                    )
-                    self._ollama_connected = True
-                except Exception as e:
-                    self._ollama_connected = False
-                    _LOGGER.warning("Narration skipped: %s", e)
-
-                suggestions = ranked
-                if suggestions:
-                    self._last_suggestions = suggestions
-                else:
-                    suggestions = self._last_suggestions
-
-                await self._ws_server.broadcast_suggestions(suggestions)
-                if self._ha:
-                    await self._ha.write_suggestions_state(suggestions)
-                self._last_refresh_str = datetime.now().strftime("%H:%M:%S")
-                self._push_system_status()
-                _LOGGER.info("Refresh complete: %d suggestions", len(suggestions))
-            except Exception as e:
-                _LOGGER.error("Refresh cycle error: %s", e)
-                await self._ws_server.broadcast_status("error")
-                self._push_system_status()
 
     async def _on_feedback(self, entity_id: str, vote: str) -> None:
         outcome = "run" if vote == "up" else "dismissed"
         await self._usage_log.log(entity_id, "", outcome, 0.0)
         _LOGGER.info("Feedback logged: %s %s", entity_id, outcome)
-        if self._last_states:
-            asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
 
     async def _on_save_automation(self, suggestion: dict) -> None:
         _LOGGER.info("Save as automation requested: %s", suggestion.get("entity_id"))
@@ -438,8 +259,12 @@ class SmartSuggestionsAddon:
         await self._ws_server.broadcast_automation_result(result)
 
     async def _on_trigger_refresh(self) -> None:
-        if self._last_states:
-            asyncio.get_running_loop().create_task(self._run_refresh_cycle(self._last_states))
+        """Re-broadcast last cached suggestions. Does NOT re-run mining."""
+        combined = (
+            self._pipeline_state.get("last_suggestion_zone", []) +
+            self._pipeline_state.get("last_noticed_zone", [])
+        )
+        await self._ws_server.broadcast_suggestions(combined)
 
     async def _on_trigger_refresh_all(self) -> None:
         """User-initiated trigger — runs the full mining pipeline immediately."""

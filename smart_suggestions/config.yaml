@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "3.0.3"
+version: "3.0.4"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon
@@ -37,7 +37,6 @@ options:
   waste_check_interval_minutes: 5
   min_pattern_occurrences: 5
   min_pattern_confidence: 0.7
-  pattern_confidence_threshold: 0.6
   domains:
     - light
     - switch
@@ -69,7 +68,6 @@ schema:
   waste_check_interval_minutes: int
   min_pattern_occurrences: int
   min_pattern_confidence: float
-  pattern_confidence_threshold: float
   domains:
     - str
 # image: ghcr.io/64bitjoe/smart-suggestions-addon/{arch}
