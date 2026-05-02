@@ -9,7 +9,14 @@ from db_reader import StateChange
 MIN_DURATION_HOURS = 1
 ANOMALY_MULTIPLIER = 3.0
 
+# States that count as "device is actively on / running" for waste detection.
+_ACTIVE_STATES = {"on", "heat", "cool", "heat_cool", "fan_only", "auto"}
+# States that count as "device finished its on session".
+_INACTIVE_STATES = {"off", "idle"}
 
+
+# TODO(v2): context rule (e.g., heater on while window sensor open).
+# TODO(v2): hour-of-day bucketed baseline (currently global median).
 class WasteDetector:
     async def run(
         self,
@@ -30,7 +37,7 @@ class WasteDetector:
         candidates: list[Candidate] = []
 
         for entity_id, (state, since) in current_states.items():
-            if state != "on":
+            if state not in _ACTIVE_STATES:
                 continue
             current_dur = (now - since).total_seconds()
             if current_dur < MIN_DURATION_HOURS * 3600:
@@ -73,9 +80,9 @@ class WasteDetector:
             durations = []
             on_at: datetime | None = None
             for c in changes:
-                if c.state == "on" and on_at is None:
+                if c.state in _ACTIVE_STATES and on_at is None:
                     on_at = c.ts
-                elif c.state == "off" and on_at is not None:
+                elif c.state in _INACTIVE_STATES and on_at is not None:
                     durations.append((c.ts - on_at).total_seconds())
                     on_at = None
             if durations:
