@@ -32,6 +32,8 @@ _OPTIONS_FILE = "/data/options.json"
 _FEEDBACK_FILE = "/data/feedback.json"
 _DENY_LIST_FILE = "/data/deny_list.json"
 
+# Cost-control caps. Keep in sync with config.yaml mining options.
+MAX_SURVIVORS_PER_CYCLE = 10  # Top-N candidates by conditional_prob to describe
 
 
 async def mine_and_emit_suggestions(
@@ -62,7 +64,11 @@ async def mine_and_emit_suggestions(
     )
     survivors = await filt.filter(candidates)
 
-    # Append user-confirmed patterns (bypass filter)
+    # Cap cost: only describe top-N survivors per cycle, ranked by conditional_prob.
+    survivors.sort(key=lambda c: c.conditional_prob, reverse=True)
+    survivors = survivors[:MAX_SURVIVORS_PER_CYCLE]
+
+    # Append user-confirmed patterns (always surface, bypass filter and top-N cap)
     if user_pattern_store is not None:
         try:
             user_patterns = await user_pattern_store.list_all()

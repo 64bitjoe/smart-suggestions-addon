@@ -85,13 +85,13 @@ class LlmDescriber:
 
     async def describe(self, candidate: Candidate, user_confirmed: bool = False) -> Description:
         await self._ensure_initialized()
-        sig = candidate.signature()
-        # For user-confirmed patterns, don't use cached descriptions (always regenerate
-        # to incorporate the confirmed-pattern prompt prefix)
-        if not user_confirmed:
-            cached = await self._get_cached(sig)
-            if cached:
-                return cached
+        # Cache key includes the user_confirmed flag so confirmed and unconfirmed
+        # variants of the same signature get separate cache entries (the prompt
+        # differs). Both ARE cached — repeat cycles never re-bill Claude.
+        sig = candidate.signature() + (":uc" if user_confirmed else "")
+        cached = await self._get_cached(sig)
+        if cached:
+            return cached
 
         prompt = _build_prompt(candidate, user_confirmed=user_confirmed)
         resp = await self.client.messages.create(
