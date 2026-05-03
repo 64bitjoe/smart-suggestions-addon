@@ -1,5 +1,5 @@
 name: Smart Suggestions
-version: "3.0.4"
+version: "3.1.0"
 slug: smart_suggestions
 description: AI-powered contextual home automation suggestions using local Ollama
 url: https://github.com/64bitjoe/smart-suggestions-addon

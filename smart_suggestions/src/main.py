@@ -14,7 +14,7 @@ from ha_client import HAClient
 from usage_log import UsageLog
 from ws_server import WSServer
 from db_reader import DbReader
-from dismissal_store import DismissalStore
+from signal_store import SignalStore, SignalType
 from candidate_filter import CandidateFilter
 from llm_describer import LlmDescriber
 from miners.temporal import TemporalMiner
@@ -36,11 +36,13 @@ _DENY_LIST_FILE = "/data/deny_list.json"
 
 async def mine_and_emit_suggestions(
     db_reader: DbReader,
-    dismissal_store: DismissalStore,
+    signal_store: SignalStore,
     llm_describer: LlmDescriber,
     ha_client: HAClient,
     state: dict,
     history_window_days: int = 30,
+    user_pattern_store=None,
+    outcome_tracker=None,
 ) -> None:
     """Run all four miners, filter, describe, and write suggestions."""
     now = datetime.now(timezone.utc)
@@ -53,12 +55,26 @@ async def mine_and_emit_suggestions(
     candidates = list(temporal) + list(sequence) + list(cross)
 
     automated_entities = await ha_client.get_automated_entities()
-    filt = CandidateFilter(automated_entities=automated_entities, dismissal_store=dismissal_store)
+    filt = CandidateFilter(
+        automated_entities=automated_entities,
+        signal_store=signal_store,
+        outcome_tracker=outcome_tracker,
+    )
     survivors = await filt.filter(candidates)
+
+    # Append user-confirmed patterns (bypass filter)
+    if user_pattern_store is not None:
+        try:
+            user_patterns = await user_pattern_store.list_all()
+            for p in user_patterns:
+                survivors.append(_user_pattern_to_candidate(p))
+        except Exception:
+            _LOGGER.exception("Failed to load user patterns")
 
     suggestions = []
     for c in survivors:
-        desc = await llm_describer.describe(c)
+        user_confirmed = c.details.get("user_confirmed", False) if c.details else False
+        desc = await llm_describer.describe(c, user_confirmed=user_confirmed)
         suggestions.append({
             "miner_type": c.miner_type.value,
             "entity_id": c.entity_id,
@@ -69,7 +85,27 @@ async def mine_and_emit_suggestions(
             "confidence": c.conditional_prob,
             "signature": c.signature(),
             "zone": "suggestion",
+            **({"user_confirmed": True, "user_label": c.details.get("user_label", "")} if user_confirmed else {}),
         })
+
+    # Record pending outcomes for suggestion-zone items
+    if outcome_tracker is not None:
+        now = datetime.now(timezone.utc)
+        for s in suggestions:
+            try:
+                target = s.get("details", {})
+                target_entity = s.get("entity_id", "")
+                target_action = s.get("action", "")
+                await outcome_tracker.record_pending(
+                    signature=s["signature"],
+                    miner_type=s["miner_type"],
+                    target_entity=target_entity,
+                    target_action=target_action,
+                    suggested_at=now,
+                )
+            except Exception:
+                pass  # outcome tracking must never block suggestion emission
+
     state["last_suggestion_zone"] = suggestions
 
     combined = state["last_suggestion_zone"] + state.get("last_noticed_zone", [])
@@ -80,10 +116,11 @@ async def mine_and_emit_suggestions(
 
 async def mine_and_emit_waste_only(
     db_reader: DbReader,
-    dismissal_store: DismissalStore,
+    signal_store: SignalStore,
     llm_describer: LlmDescriber,
     ha_client: HAClient,
     state: dict,
+    outcome_tracker=None,
 ) -> None:
     """5-minute waste-only check; refreshes only the noticed zone."""
     if not state.get("hourly_completed", False):
@@ -95,12 +132,16 @@ async def mine_and_emit_waste_only(
     waste = await WasteDetector().run(history, current, datetime.now(timezone.utc))
 
     automated = await ha_client.get_automated_entities()
-    filt = CandidateFilter(automated_entities=automated, dismissal_store=dismissal_store)
+    filt = CandidateFilter(
+        automated_entities=automated,
+        signal_store=signal_store,
+        outcome_tracker=outcome_tracker,
+    )
     survivors = await filt.filter(waste)
 
     noticed = []
     for c in survivors:
-        desc = await llm_describer.describe(c)
+        desc = await llm_describer.describe(c, user_confirmed=False)
         noticed.append({
             "miner_type": c.miner_type.value,
             "entity_id": c.entity_id,
@@ -121,15 +162,19 @@ async def mine_and_emit_waste_only(
 
 async def hourly_mining_loop(
     db_reader: DbReader,
-    dismissal_store: DismissalStore,
+    signal_store: SignalStore,
     llm_describer: LlmDescriber,
     ha_client: HAClient,
     state: dict,
+    user_pattern_store=None,
+    outcome_tracker=None,
 ) -> None:
     while True:
         try:
             await mine_and_emit_suggestions(
-                db_reader, dismissal_store, llm_describer, ha_client, state
+                db_reader, signal_store, llm_describer, ha_client, state,
+                user_pattern_store=user_pattern_store,
+                outcome_tracker=outcome_tracker,
             )
         except Exception:
             _LOGGER.exception("hourly mining failed")
@@ -138,19 +183,88 @@ async def hourly_mining_loop(
 
 async def waste_check_loop(
     db_reader: DbReader,
-    dismissal_store: DismissalStore,
+    signal_store: SignalStore,
     llm_describer: LlmDescriber,
     ha_client: HAClient,
     state: dict,
+    outcome_tracker=None,
 ) -> None:
     while True:
         try:
             await mine_and_emit_waste_only(
-                db_reader, dismissal_store, llm_describer, ha_client, state
+                db_reader, signal_store, llm_describer, ha_client, state,
+                outcome_tracker=outcome_tracker,
             )
         except Exception:
             _LOGGER.exception("waste check failed")
         await asyncio.sleep(300)
+
+
+async def outcome_check_loop(outcome_tracker, ha_client) -> None:
+    """Every 5 min, check pending outcomes against current HA state."""
+    while True:
+        try:
+            await check_pending_outcomes(outcome_tracker, ha_client)
+        except Exception:
+            _LOGGER.exception("outcome check failed")
+        await asyncio.sleep(300)
+
+
+async def check_pending_outcomes(outcome_tracker, ha_client) -> None:
+    pending = await outcome_tracker.list_pending(max_age=outcome_tracker.action_window)
+    if not pending:
+        return
+    states = getattr(ha_client, '_states', {}) or {}
+    now = datetime.now(timezone.utc)
+    for entry in pending:
+        eid = entry["target_entity"]
+        suggested_at = datetime.fromtimestamp(entry["suggested_at"], tz=timezone.utc)
+        age = (now - suggested_at).total_seconds()
+
+        s = states.get(eid)
+        if s and s.get("last_changed"):
+            try:
+                last = datetime.fromisoformat(s["last_changed"].replace("Z", "+00:00"))
+                if last >= suggested_at:
+                    action = entry["target_action"]
+                    if _action_matches(s, action):
+                        await outcome_tracker.resolve(entry["id"], "acted", last)
+                        continue
+            except Exception:
+                pass
+
+        # If past action window, mark expired
+        if age > outcome_tracker.action_window.total_seconds():
+            await outcome_tracker.resolve(entry["id"], "expired", now)
+
+
+def _action_matches(state_dict: dict, action: str) -> bool:
+    s = state_dict.get("state", "")
+    if action == "turn_on" and s in {"on", "heat", "cool", "playing", "open"}:
+        return True
+    if action == "turn_off" and s in {"off", "idle", "closed", "unlocked"}:
+        return True
+    if action.startswith("set_state_"):
+        return s == action[len("set_state_"):]
+    return False
+
+
+def _user_pattern_to_candidate(p) -> "Candidate":
+    from candidate import Candidate, MinerType
+    return Candidate(
+        miner_type=MinerType.SEQUENCE,
+        entity_id=p.trigger_entity,
+        action=p.trigger_action,
+        details={
+            "target_entity": p.target_entity,
+            "target_action": p.target_action,
+            "delta_seconds": p.latency_seconds,
+            "user_confirmed": True,
+            "user_label": p.label,
+        },
+        occurrences=999,
+        conditional_prob=1.0,
+    )
 
 
 def _load_options() -> dict:
@@ -178,8 +292,16 @@ class _WSLogHandler(logging.Handler):
 class SmartSuggestionsAddon:
     def __init__(self, opts: dict) -> None:
         self._opts = opts
-        self._dismissal_store = DismissalStore(db_path="/data/dismissals.db")
-        self._ws_server = WSServer(dismissal_store=self._dismissal_store)
+        self._signal_store = SignalStore(db_path="/data/signals.db")
+        from user_pattern_store import UserPatternStore
+        from outcome_tracker import OutcomeTracker
+        self._user_pattern_store = UserPatternStore(db_path="/data/user_patterns.db")
+        self._outcome_tracker = OutcomeTracker(db_path="/data/outcomes.db")
+        self._ws_server = WSServer(
+            signal_store=self._signal_store,
+            user_pattern_store=self._user_pattern_store,
+            outcome_tracker=self._outcome_tracker,
+        )
         _key = opts.get("ai_api_key", "")
         _ai_model = opts.get("ai_model", "claude-haiku-4-5-20251001")
         _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
@@ -276,18 +398,21 @@ class SmartSuggestionsAddon:
         try:
             await mine_and_emit_suggestions(
                 self._db_reader,
-                self._dismissal_store,
+                self._signal_store,
                 self._llm_describer,
                 self._ha,
                 self._pipeline_state,
+                user_pattern_store=self._user_pattern_store,
+                outcome_tracker=self._outcome_tracker,
             )
             # Also run a waste check immediately since hourly_completed is now True.
             await mine_and_emit_waste_only(
                 self._db_reader,
-                self._dismissal_store,
+                self._signal_store,
                 self._llm_describer,
                 self._ha,
                 self._pipeline_state,
+                outcome_tracker=self._outcome_tracker,
             )
             _LOGGER.info("Mine Now complete")
         except Exception:
@@ -336,8 +461,18 @@ class SmartSuggestionsAddon:
             model=self._opts.get("ai_model", "claude-haiku-4-5-20251001"),
         )
         self._ws_server.set_pipeline_state(self._pipeline_state, self._opts)
-        loop.create_task(hourly_mining_loop(self._db_reader, self._dismissal_store, self._llm_describer, self._ha, self._pipeline_state))
-        loop.create_task(waste_check_loop(self._db_reader, self._dismissal_store, self._llm_describer, self._ha, self._pipeline_state))
+        loop.create_task(hourly_mining_loop(
+            self._db_reader, self._signal_store, self._llm_describer, self._ha,
+            self._pipeline_state,
+            user_pattern_store=self._user_pattern_store,
+            outcome_tracker=self._outcome_tracker,
+        ))
+        loop.create_task(waste_check_loop(
+            self._db_reader, self._signal_store, self._llm_describer, self._ha,
+            self._pipeline_state,
+            outcome_tracker=self._outcome_tracker,
+        ))
+        loop.create_task(outcome_check_loop(self._outcome_tracker, self._ha))
 
         await self._ha.start()  # blocks forever — keeps event loop alive
 

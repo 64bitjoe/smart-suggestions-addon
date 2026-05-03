@@ -34,8 +34,11 @@ def _strip_json_fences(text: str) -> str:
     return s.strip()
 
 
-def _build_prompt(c: Candidate) -> str:
-    return f"""You generate Home Assistant automation suggestions from already-validated patterns.
+def _build_prompt(c: Candidate, user_confirmed: bool = False) -> str:
+    prefix = ""
+    if user_confirmed:
+        prefix = "This is a USER-CONFIRMED pattern (the user explicitly told us about it). Generate the description and YAML accordingly.\n"
+    return f"""{prefix}You generate Home Assistant automation suggestions from already-validated patterns.
 Pattern: {c.miner_type.value}
 Entity: {c.entity_id}
 Action: {c.action}
@@ -80,14 +83,17 @@ class LlmDescriber:
         if not self._initialized:
             await self.init()
 
-    async def describe(self, candidate: Candidate) -> Description:
+    async def describe(self, candidate: Candidate, user_confirmed: bool = False) -> Description:
         await self._ensure_initialized()
         sig = candidate.signature()
-        cached = await self._get_cached(sig)
-        if cached:
-            return cached
+        # For user-confirmed patterns, don't use cached descriptions (always regenerate
+        # to incorporate the confirmed-pattern prompt prefix)
+        if not user_confirmed:
+            cached = await self._get_cached(sig)
+            if cached:
+                return cached
 
-        prompt = _build_prompt(candidate)
+        prompt = _build_prompt(candidate, user_confirmed=user_confirmed)
         resp = await self.client.messages.create(
             model=self.model,
             max_tokens=900,

@@ -252,6 +252,48 @@ _UI_HTML = """<!DOCTYPE html>
   .log-msg { color: var(--secondary-text-color, #999); word-break: break-all; }
   .log-empty { color: var(--disabled-text-color, #636366); font-style: italic; }
 
+  /* ── Modal ── */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 300; display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .modal-card {
+    background: var(--card-background-color, #1c1c1e);
+    border-radius: var(--ha-card-border-radius, 16px);
+    padding: 20px; width: 100%; max-width: 480px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .modal-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .modal-desc { font-size: 13px; color: var(--secondary-text-color, #8e8e93); margin-bottom: 4px; }
+  .modal-card label { font-size: 12px; font-weight: 600; color: var(--secondary-text-color, #8e8e93); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 6px; }
+  .modal-card select {
+    width: 100%; background: rgba(var(--rgb-primary-text-color,255,255,255),0.08);
+    border: 1px solid rgba(var(--rgb-primary-text-color,255,255,255),0.1);
+    border-radius: 10px; color: var(--primary-text-color, #fff);
+    padding: 10px 14px; font-size: 15px; outline: none; margin-bottom: 4px; font-family: inherit;
+  }
+  .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .modal-actions .action-btn { flex: 1; }
+
+  /* ── Outcomes ── */
+  .outcome-row { padding: 12px 16px; border-bottom: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); display: flex; align-items: center; gap: 12px; }
+  .outcome-row:last-child { border-bottom: none; }
+  .outcome-miner { font-size: 13px; font-weight: 600; flex: 1; text-transform: capitalize; }
+  .outcome-rate { font-size: 12px; color: var(--secondary-text-color, #8e8e93); }
+
+  /* ── User patterns list ── */
+  .pattern-row { padding: 12px 16px; border-bottom: 0.5px solid rgba(var(--rgb-primary-text-color,255,255,255),0.05); display: flex; align-items: center; gap: 10px; }
+  .pattern-row:last-child { border-bottom: none; }
+  .pattern-body { flex: 1; min-width: 0; }
+  .pattern-title { font-size: 13px; font-weight: 600; }
+  .pattern-detail { font-size: 11px; color: var(--secondary-text-color, #8e8e93); margin-top: 2px; }
+  .pattern-del-btn {
+    background: rgba(244,67,54,0.12); color: var(--error-color, #f44336);
+    border: none; border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; min-height: 32px;
+  }
+  .badge-confirmed { background: rgba(76,175,80,0.18); color: var(--success-color, #4caf50); }
+
   /* ── Toast ── */
   .toast {
     position: fixed; bottom: 80px; left: 50%;
@@ -377,7 +419,42 @@ _UI_HTML = """<!DOCTYPE html>
     Edit in HA Settings
   </a>
 
+  <!-- Your Patterns -->
+  <div class="sh">Your Patterns <button class="action-btn" id="teach-pattern-btn" style="float:right;font-size:13px;padding:6px 12px;min-height:auto">+ Teach</button></div>
+  <div class="pipeline-card" id="user-patterns-list"><div class="empty-hint" style="padding:14px 16px">No patterns taught yet.</div></div>
+
+  <!-- Outcomes -->
+  <div class="sh">Outcomes (last 7 days)</div>
+  <div class="pipeline-card" id="pipeline-outcomes-card">
+    <div class="empty-hint" style="padding:14px 16px">Tracking your follow-through. Build up some history first.</div>
+  </div>
+
 </div>
+
+<!-- Teach a Pattern Modal -->
+<div class="modal" id="teach-modal" style="display:none">
+  <div class="modal-card">
+    <h3>Teach a Pattern</h3>
+    <p class="modal-desc">When this happens → that follows.</p>
+    <label>When entity:</label>
+    <input class="inject-search" id="teach-trigger-eid" type="search" placeholder="entity_id" autocomplete="off" list="entity-datalist" style="margin-bottom:4px">
+    <select id="teach-trigger-action"><option value="turn_on">turn_on</option><option value="turn_off">turn_off</option></select>
+    <label>Then entity:</label>
+    <input class="inject-search" id="teach-target-eid" type="search" placeholder="entity_id" autocomplete="off" list="entity-datalist" style="margin-bottom:4px">
+    <select id="teach-target-action"><option value="turn_on">turn_on</option><option value="turn_off">turn_off</option></select>
+    <label>Within (seconds, optional):</label>
+    <input class="inject-search" id="teach-latency" type="number" min="0" max="3600" placeholder="0" style="margin-bottom:4px">
+    <label>Label (optional):</label>
+    <input class="inject-search" id="teach-label" type="text" placeholder="Movie night routine" style="margin-bottom:4px">
+    <div class="modal-actions">
+      <button class="action-btn" id="teach-cancel">Cancel</button>
+      <button class="action-btn primary" id="teach-save">Save</button>
+    </div>
+  </div>
+</div>
+<datalist id="entity-datalist"></datalist>
+
+<!-- (end pipeline tab + modals) -->
 
 <!-- ══ TAB: System ══ -->
 <div class="tab-page" id="page-system">
@@ -433,7 +510,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('page-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'pipeline') { refreshPipelineStatus(); }
+    if (btn.dataset.tab === 'pipeline') { refreshPipelineStatus(); loadUserPatterns(); refreshOutcomes(); }
     if (btn.dataset.tab === 'system') { refreshSystemStatus(); if (!_entitiesLoaded) { loadEntities().then(() => renderEntities('')); } renderLogs(); }
   });
 });
@@ -458,21 +535,24 @@ const THUMB_DOWN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" 
 function makeRow(s) {
   const cur = s.current_state || '?';
   const act = s.action || '';
+  const confirmedBadge = s.user_confirmed ? `<span class="badge badge-confirmed" style="margin-left:6px;vertical-align:middle">Confirmed</span>` : '';
   return `<div class="sug">
     <div class="sug-icon">${domainEmoji(s.entity_id)}</div>
     <div class="sug-body">
-      <div class="sug-name">${escHtml(s.name || s.entity_id || '')}</div>
+      <div class="sug-name">${escHtml(s.name || s.entity_id || '')}${confirmedBadge}</div>
       <div class="sug-eid">${(s.entity_id||'').split('.')[0]} · ${s.entity_id||''}</div>
       <div class="sug-transition">
         <span class="state-chip" style="background:${stateColor(cur)}">${escHtml(cur)}</span>
         <span class="state-arrow">→</span>
         <span class="action-chip">${escHtml(actionLabel(act))}</span>
       </div>
-      <div class="sug-reason">${escHtml(s.reason || '')}</div>
+      <div class="sug-reason">${escHtml(s.reason || s.description || '')}</div>
     </div>
     <div class="sug-actions">
-      <button class="vote-btn up" data-eid="${escHtml(s.entity_id)}" data-vote="up">${THUMB_UP_SVG}</button>
-      <button class="vote-btn down" data-eid="${escHtml(s.entity_id)}" data-vote="down">${THUMB_DOWN_SVG}</button>
+      <button class="vote-btn up" data-eid="${escHtml(s.entity_id)}" data-vote="up"
+        data-signature="${escHtml(s.signature||'')}" data-miner="${escHtml(s.miner_type||'')}">${THUMB_UP_SVG}</button>
+      <button class="vote-btn down" data-eid="${escHtml(s.entity_id)}" data-vote="down"
+        data-signature="${escHtml(s.signature||'')}" data-miner="${escHtml(s.miner_type||'')}">${THUMB_DOWN_SVG}</button>
       <button class="deny-btn" data-eid="${escHtml(s.entity_id)}" title="Block">🚫</button>
     </div>
   </div>`;
@@ -512,12 +592,18 @@ function render() {
   container.querySelectorAll('.vote-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const eid=btn.dataset.eid, vote=btn.dataset.vote;
+      const sig=btn.dataset.signature, miner=btn.dataset.miner;
       btn.classList.add('voted');
       try {
+        // Legacy feedback REST for non-pipeline suggestions
         await fetch(BASE+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entity_id:eid,vote})});
         if(!_feedback[eid])_feedback[eid]={up:0,down:0};
         _feedback[eid][vote]=(_feedback[eid][vote]||0)+1;
-        showToast(vote==='up'?'Upvoted':'Downvoted');
+        // New-pipeline signal via WS (has signature + miner_type)
+        if (sig && miner && _ws && _ws.readyState === WebSocket.OPEN) {
+          _ws.send(JSON.stringify({type:'signal', signature:sig, miner_type:miner, signal:vote==='up'?'up':'down'}));
+        }
+        showToast(vote==='up'?'👍 Upvoted':'👎 Downvoted');
         render();
       } catch { showToast('Vote failed'); }
     });
@@ -694,23 +780,133 @@ function appendLog(entry){
 
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
 
+// ── Teach a Pattern modal ──
+function populateEntityDatalist() {
+  const dl = document.getElementById('entity-datalist');
+  if (!dl) return;
+  dl.innerHTML = _entities.map(e => `<option value="${escHtml(e.entity_id)}">`).join('');
+}
+
+document.getElementById('teach-pattern-btn').addEventListener('click', async () => {
+  if (!_entitiesLoaded) await loadEntities();
+  populateEntityDatalist();
+  document.getElementById('teach-modal').style.display = 'flex';
+});
+document.getElementById('teach-cancel').addEventListener('click', () => {
+  document.getElementById('teach-modal').style.display = 'none';
+});
+document.getElementById('teach-save').addEventListener('click', async () => {
+  const te = document.getElementById('teach-trigger-eid').value.trim();
+  const ta = document.getElementById('teach-trigger-action').value;
+  const ge = document.getElementById('teach-target-eid').value.trim();
+  const ga = document.getElementById('teach-target-action').value;
+  const lat = parseInt(document.getElementById('teach-latency').value || '0', 10) || 0;
+  const lbl = document.getElementById('teach-label').value.trim();
+  if (!te || !ge) { showToast('Trigger and target entity required'); return; }
+  try {
+    const r = await fetch(BASE+'/user_patterns', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({trigger_entity:te, trigger_action:ta, target_entity:ge, target_action:ga, latency_seconds:lat, label:lbl})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    document.getElementById('teach-modal').style.display = 'none';
+    // Reset form
+    document.getElementById('teach-trigger-eid').value = '';
+    document.getElementById('teach-target-eid').value = '';
+    document.getElementById('teach-latency').value = '';
+    document.getElementById('teach-label').value = '';
+    showToast('Pattern saved');
+    loadUserPatterns();
+  } catch(e) { showToast('Failed: '+e.message); }
+});
+
+async function loadUserPatterns() {
+  try {
+    const r = await fetch(BASE+'/user_patterns');
+    const patterns = await r.json();
+    renderUserPatterns(patterns);
+  } catch {}
+}
+
+function renderUserPatterns(patterns) {
+  const el = document.getElementById('user-patterns-list');
+  if (!el) return;
+  if (!patterns.length) {
+    el.innerHTML = '<div class="empty-hint" style="padding:14px 16px">No patterns taught yet.</div>';
+    return;
+  }
+  el.innerHTML = patterns.map(p => {
+    const lbl = p.label ? escHtml(p.label) : `${escHtml(p.trigger_entity)} → ${escHtml(p.target_entity)}`;
+    const detail = `${escHtml(p.trigger_entity)} ${escHtml(p.trigger_action)} → ${escHtml(p.target_entity)} ${escHtml(p.target_action)}` +
+      (p.latency_seconds ? ` within ${p.latency_seconds}s` : '');
+    return `<div class="pattern-row">
+      <div class="pattern-body">
+        <div class="pattern-title">${lbl}</div>
+        <div class="pattern-detail">${detail}</div>
+      </div>
+      <button class="pattern-del-btn" data-pid="${p.id}">Remove</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.pattern-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      try {
+        await fetch(BASE+'/user_patterns', {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:parseInt(btn.dataset.pid)})});
+        showToast('Pattern removed');
+        loadUserPatterns();
+      } catch { showToast('Failed'); }
+    });
+  });
+}
+
+// ── Outcomes ──
+async function refreshOutcomes() {
+  try {
+    const r = await fetch(BASE+'/outcomes');
+    const data = await r.json();
+    renderOutcomes(data);
+  } catch {}
+}
+
+function renderOutcomes(stats) {
+  const el = document.getElementById('pipeline-outcomes-card');
+  if (!el) return;
+  const entries = Object.entries(stats);
+  if (!entries.length) {
+    el.innerHTML = '<div class="empty-hint" style="padding:14px 16px">Tracking your follow-through. Build up some history first.</div>';
+    return;
+  }
+  el.innerHTML = entries.map(([mt, s]) =>
+    `<div class="outcome-row">
+      <span class="outcome-miner">${escHtml(mt.replace('_',' '))}</span>
+      <span class="outcome-rate">${s.acted}/${s.suggested} acted on (${Math.round((s.acted/Math.max(1,s.suggested))*100)}%)</span>
+    </div>`
+  ).join('');
+}
+
 // ── WebSocket ──
+let _ws = null;
 function connectWS(){
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(proto+'//'+location.host+BASE+'/ws');
-  ws.addEventListener('open',()=>{
+  _ws=new WebSocket(proto+'//'+location.host+BASE+'/ws');
+  _ws.addEventListener('open',()=>{
     document.getElementById('meta-text').textContent='Connected';
     refreshPipelineStatus();
+    loadUserPatterns();
+    refreshOutcomes();
   });
-  ws.addEventListener('message',evt=>{
+  _ws.addEventListener('message',evt=>{
     let msg; try{msg=JSON.parse(evt.data);}catch{return;}
     if(msg.type==='suggestions'){_suggestions=Array.isArray(msg.data)?msg.data:[];_status='ready';render();}
     else if(msg.type==='status'){_status=msg.state||'idle';render();}
     else if(msg.type==='log'){appendLog(msg);}
     else if(msg.type==='system_status'){_systemStatus=msg.data;renderStatusGrid(msg.data);}
     else if(msg.type==='deny_list'){_denyList=new Set(msg.data||[]);renderDenyPanel();}
+    else if(msg.type==='add_user_pattern_ack'){loadUserPatterns();showToast('Pattern saved');}
+    else if(msg.type==='delete_user_pattern_ack'){loadUserPatterns();}
   });
-  ws.addEventListener('close',()=>{
+  _ws.addEventListener('close',()=>{
+    _ws=null;
     document.getElementById('status-dot').className='status-dot';
     document.getElementById('meta-text').textContent='Reconnecting…';
     setTimeout(connectWS,5000);
@@ -730,8 +926,12 @@ fetch(BASE+'/logs').then(r=>r.json()).then(d=>{_logs=d;}).catch(()=>{});
 class WSServer:
     """Manages connected card WebSocket clients and broadcasts events."""
 
-    def __init__(self, dismissal_store=None) -> None:
-        self._dismissal_store = dismissal_store
+    def __init__(self, signal_store=None, user_pattern_store=None, outcome_tracker=None,
+                 dismissal_store=None) -> None:
+        # Accept either signal_store= or legacy dismissal_store=
+        self._signal_store = signal_store or dismissal_store
+        self._user_pattern_store = user_pattern_store
+        self._outcome_tracker = outcome_tracker
         self._clients: set[web.WebSocketResponse] = set()
         self._app = web.Application()
         self._app.router.add_get("/ws", self._ws_handler)
@@ -748,6 +948,10 @@ class WSServer:
         self._app.router.add_post("/deny", self._deny_handler)
         self._app.router.add_delete("/deny", self._undeny_handler)
         self._app.router.add_get("/deny_list", self._deny_list_handler)
+        self._app.router.add_get("/outcomes", self._outcomes_handler)
+        self._app.router.add_get("/user_patterns", self._user_patterns_handler)
+        self._app.router.add_post("/user_patterns", self._add_user_pattern_handler)
+        self._app.router.add_delete("/user_patterns", self._delete_user_pattern_handler)
         self._runner: web.AppRunner | None = None
         self._last_suggestions: list = []
         self._last_status: str = "idle"
@@ -864,17 +1068,90 @@ class WSServer:
         elif msg_type == "dismiss":
             sig = msg.get("signature")
             miner_type_str = msg.get("miner_type")
-            if sig and miner_type_str and self._dismissal_store is not None:
+            if sig and miner_type_str and self._signal_store is not None:
                 try:
                     from candidate import MinerType
+                    from signal_store import SignalType
                     from datetime import datetime, timezone
-                    await self._dismissal_store.add_dismissal(
-                        sig, MinerType(miner_type_str), datetime.now(timezone.utc)
-                    )
+                    # Support both new SignalStore and legacy DismissalStore
+                    if hasattr(self._signal_store, 'add_signal'):
+                        await self._signal_store.add_signal(
+                            sig, MinerType(miner_type_str), SignalType.DISMISS,
+                            datetime.now(timezone.utc)
+                        )
+                    else:
+                        await self._signal_store.add_dismissal(
+                            sig, MinerType(miner_type_str), datetime.now(timezone.utc)
+                        )
                     await ws.send_json({"type": "dismiss_ack", "signature": sig})
                 except Exception:
                     _LOGGER.exception("dismiss handler failed for signature=%s miner_type=%s", sig, miner_type_str)
                     await ws.send_json({"type": "dismiss_error", "signature": sig})
+
+        elif msg_type == "signal":
+            sig = msg.get("signature")
+            miner_type_str = msg.get("miner_type")
+            sig_type_str = msg.get("signal")  # "up", "down", or "dismiss"
+            if sig and miner_type_str and sig_type_str and self._signal_store is not None:
+                try:
+                    from candidate import MinerType
+                    from signal_store import SignalType
+                    from datetime import datetime, timezone
+                    await self._signal_store.add_signal(
+                        sig, MinerType(miner_type_str), SignalType(sig_type_str),
+                        datetime.now(timezone.utc)
+                    )
+                    await ws.send_json({"type": "signal_ack", "signature": sig, "signal": sig_type_str})
+                except Exception:
+                    _LOGGER.exception("signal handler failed")
+                    await ws.send_json({"type": "signal_error", "signature": sig})
+
+        elif msg_type == "add_user_pattern":
+            if self._user_pattern_store is not None:
+                try:
+                    pid = await self._user_pattern_store.add(
+                        trigger_entity=msg.get("trigger_entity", ""),
+                        trigger_action=msg.get("trigger_action", "turn_on"),
+                        target_entity=msg.get("target_entity", ""),
+                        target_action=msg.get("target_action", "turn_on"),
+                        latency_seconds=int(msg.get("latency_seconds", 0) or 0),
+                        label=msg.get("label", ""),
+                    )
+                    if ws:
+                        await ws.send_json({"type": "add_user_pattern_ack", "id": pid})
+                except Exception:
+                    _LOGGER.exception("add_user_pattern handler failed")
+                    if ws:
+                        await ws.send_json({"type": "add_user_pattern_error"})
+
+        elif msg_type == "list_user_patterns":
+            if self._user_pattern_store is not None and ws:
+                try:
+                    patterns = await self._user_pattern_store.list_all()
+                    await ws.send_json({
+                        "type": "user_patterns",
+                        "data": [
+                            {"id": p.pattern_id, "trigger_entity": p.trigger_entity,
+                             "trigger_action": p.trigger_action, "target_entity": p.target_entity,
+                             "target_action": p.target_action, "latency_seconds": p.latency_seconds,
+                             "label": p.label}
+                            for p in patterns
+                        ]
+                    })
+                except Exception:
+                    _LOGGER.exception("list_user_patterns handler failed")
+
+        elif msg_type == "delete_user_pattern":
+            if self._user_pattern_store is not None:
+                try:
+                    pid = int(msg.get("id", 0))
+                    await self._user_pattern_store.delete(pid)
+                    if ws:
+                        await ws.send_json({"type": "delete_user_pattern_ack", "id": pid})
+                except Exception:
+                    _LOGGER.exception("delete_user_pattern handler failed")
+                    if ws:
+                        await ws.send_json({"type": "delete_user_pattern_error"})
 
     async def broadcast_automation_result(self, result: dict) -> None:
         await self.broadcast({"type": "automation_result", **result})
@@ -1083,6 +1360,64 @@ class WSServer:
 
     async def _deny_list_handler(self, request: web.Request) -> web.Response:
         return web.json_response(sorted(self._deny_set))
+
+    async def _outcomes_handler(self, request: web.Request) -> web.Response:
+        if not self._outcome_tracker:
+            return web.json_response({})
+        try:
+            from datetime import timedelta
+            stats = await self._outcome_tracker.stats_per_miner(timedelta(days=7))
+            return web.json_response({
+                mt: {"miner_type": s.miner_type, "suggested": s.suggested, "acted": s.acted_on}
+                for mt, s in stats.items()
+            })
+        except Exception:
+            _LOGGER.exception("outcomes handler failed")
+            return web.json_response({})
+
+    async def _user_patterns_handler(self, request: web.Request) -> web.Response:
+        if not self._user_pattern_store:
+            return web.json_response([])
+        try:
+            patterns = await self._user_pattern_store.list_all()
+            return web.json_response([
+                {"id": p.pattern_id, "trigger_entity": p.trigger_entity,
+                 "trigger_action": p.trigger_action, "target_entity": p.target_entity,
+                 "target_action": p.target_action, "latency_seconds": p.latency_seconds,
+                 "label": p.label}
+                for p in patterns
+            ])
+        except Exception:
+            _LOGGER.exception("user_patterns handler failed")
+            return web.json_response([])
+
+    async def _add_user_pattern_handler(self, request: web.Request) -> web.Response:
+        if not self._user_pattern_store:
+            return web.json_response({"ok": False, "error": "not configured"}, status=503)
+        try:
+            data = await request.json()
+            pid = await self._user_pattern_store.add(
+                trigger_entity=data.get("trigger_entity", ""),
+                trigger_action=data.get("trigger_action", "turn_on"),
+                target_entity=data.get("target_entity", ""),
+                target_action=data.get("target_action", "turn_on"),
+                latency_seconds=int(data.get("latency_seconds", 0) or 0),
+                label=data.get("label", ""),
+            )
+            return web.json_response({"ok": True, "id": pid})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def _delete_user_pattern_handler(self, request: web.Request) -> web.Response:
+        if not self._user_pattern_store:
+            return web.json_response({"ok": False, "error": "not configured"}, status=503)
+        try:
+            data = await request.json()
+            pid = int(data.get("id", 0))
+            await self._user_pattern_store.delete(pid)
+            return web.json_response({"ok": True})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
 
     async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=30)
