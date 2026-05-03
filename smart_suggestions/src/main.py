@@ -335,6 +335,8 @@ class SmartSuggestionsAddon:
             "last_hourly_at": None,
             "last_waste_at": None,
         }
+        # Lock to prevent concurrent Mine Now invocations (e.g. double-click).
+        self._mine_now_lock = asyncio.Lock()
 
     def _push_system_status(self) -> None:
         status = {
@@ -395,34 +397,43 @@ class SmartSuggestionsAddon:
         await self._ws_server.broadcast_suggestions(combined)
 
     async def _on_trigger_refresh_all(self) -> None:
-        """User-initiated trigger — runs the full mining pipeline immediately."""
-        _LOGGER.info("Mine Now triggered")
-        if not self._db_reader or not self._llm_describer or not self._ha:
-            _LOGGER.warning("Mine Now: pipeline not ready yet (db_reader=%s, llm_describer=%s, ha=%s)",
-                            self._db_reader, self._llm_describer, self._ha)
+        """User-initiated trigger — runs the full mining pipeline immediately.
+
+        Guarded by an asyncio.Lock so accidental double-clicks (or rapid retries)
+        don't start parallel mining cycles, which would multiply Claude API costs
+        with no benefit.
+        """
+        if self._mine_now_lock.locked():
+            _LOGGER.info("Mine Now ignored — a cycle is already running")
             return
-        try:
-            await mine_and_emit_suggestions(
-                self._db_reader,
-                self._signal_store,
-                self._llm_describer,
-                self._ha,
-                self._pipeline_state,
-                user_pattern_store=self._user_pattern_store,
-                outcome_tracker=self._outcome_tracker,
-            )
-            # Also run a waste check immediately since hourly_completed is now True.
-            await mine_and_emit_waste_only(
-                self._db_reader,
-                self._signal_store,
-                self._llm_describer,
-                self._ha,
-                self._pipeline_state,
-                outcome_tracker=self._outcome_tracker,
-            )
-            _LOGGER.info("Mine Now complete")
-        except Exception:
-            _LOGGER.exception("Mine Now failed")
+        async with self._mine_now_lock:
+            _LOGGER.info("Mine Now triggered")
+            if not self._db_reader or not self._llm_describer or not self._ha:
+                _LOGGER.warning("Mine Now: pipeline not ready yet (db_reader=%s, llm_describer=%s, ha=%s)",
+                                self._db_reader, self._llm_describer, self._ha)
+                return
+            try:
+                await mine_and_emit_suggestions(
+                    self._db_reader,
+                    self._signal_store,
+                    self._llm_describer,
+                    self._ha,
+                    self._pipeline_state,
+                    user_pattern_store=self._user_pattern_store,
+                    outcome_tracker=self._outcome_tracker,
+                )
+                # Also run a waste check immediately since hourly_completed is now True.
+                await mine_and_emit_waste_only(
+                    self._db_reader,
+                    self._signal_store,
+                    self._llm_describer,
+                    self._ha,
+                    self._pipeline_state,
+                    outcome_tracker=self._outcome_tracker,
+                )
+                _LOGGER.info("Mine Now complete")
+            except Exception:
+                _LOGGER.exception("Mine Now failed")
 
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions starting")
@@ -489,7 +500,15 @@ class SmartSuggestionsAddon:
             await self._ha.stop()
         await self._ws_server.stop()
         if self._anthropic_client is not None:
-            await self._anthropic_client.aclose()
+            # SDK >= 0.20 exposes aclose(); older versions only have close().
+            close_fn = getattr(self._anthropic_client, "aclose", None) or getattr(
+                self._anthropic_client, "close", None
+            )
+            if close_fn is not None:
+                try:
+                    await close_fn()
+                except Exception:
+                    _LOGGER.exception("Anthropic client close failed (non-fatal)")
 
 
 if __name__ == "__main__":
