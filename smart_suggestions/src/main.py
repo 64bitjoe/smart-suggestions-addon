@@ -339,10 +339,15 @@ class SmartSuggestionsAddon:
         self._mine_now_lock = asyncio.Lock()
 
     def _push_system_status(self) -> None:
+        ps = self._pipeline_state
         status = {
             "ha_connected": self._ha_connected,
             "entity_count": len(self._last_states),
             "last_refresh": self._last_refresh_str,
+            "last_hourly_completed_at": ps.get("last_hourly_at"),
+            "last_waste_at": ps.get("last_waste_at"),
+            "suggestion_zone_count": len(ps.get("last_suggestion_zone", [])),
+            "noticed_zone_count": len(ps.get("last_noticed_zone", [])),
         }
         self._ws_server.set_system_status(status)
 
@@ -434,6 +439,9 @@ class SmartSuggestionsAddon:
                 _LOGGER.info("Mine Now complete")
             except Exception:
                 _LOGGER.exception("Mine Now failed")
+            finally:
+                # Push status so UI reflects new last_hourly_at / counts immediately.
+                self._push_system_status()
 
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions starting")
