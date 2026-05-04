@@ -45,11 +45,20 @@ async def mine_and_emit_suggestions(
     history_window_days: int = 30,
     user_pattern_store=None,
     outcome_tracker=None,
+    domains: set[str] | None = None,
 ) -> None:
-    """Run all four miners, filter, describe, and write suggestions."""
+    """Run all four miners, filter, describe, and write suggestions.
+
+    `domains` is the set of entity-domain prefixes (e.g. {"light","switch"})
+    the user has opted-in to via config.yaml. State changes outside these
+    domains are excluded from mining entirely.
+    """
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=history_window_days)
     all_changes = await db_reader.get_all_state_changes(since)
+
+    if domains:
+        all_changes = [c for c in all_changes if c.entity_id.split(".", 1)[0] in domains]
 
     temporal = await TemporalMiner().run(all_changes, now=now)
     sequence = await SequenceMiner().run(all_changes)
@@ -77,14 +86,23 @@ async def mine_and_emit_suggestions(
         except Exception:
             _LOGGER.exception("Failed to load user patterns")
 
+    states = ha_client._states or {}
+
     suggestions = []
     for c in survivors:
         user_confirmed = c.details.get("user_confirmed", False) if c.details else False
         desc = await llm_describer.describe(c, user_confirmed=user_confirmed)
+        s = states.get(c.entity_id, {}) or {}
+        attrs = s.get("attributes") or {}
         suggestions.append({
             "miner_type": c.miner_type.value,
             "entity_id": c.entity_id,
             "action": c.action,
+            # Card-compatible fields (the existing card render path expects these names):
+            "name": attrs.get("friendly_name") or desc.title or c.entity_id,
+            "reason": desc.description,
+            "current_state": s.get("state", "?"),
+            # New-pipeline fields:
             "title": desc.title,
             "description": desc.description,
             "automation_yaml": desc.automation_yaml,
@@ -127,6 +145,7 @@ async def mine_and_emit_waste_only(
     ha_client: HAClient,
     state: dict,
     outcome_tracker=None,
+    domains: set[str] | None = None,
 ) -> None:
     """5-minute waste-only check; refreshes only the noticed zone."""
     if not state.get("hourly_completed", False):
@@ -135,6 +154,11 @@ async def mine_and_emit_waste_only(
     since = datetime.now(timezone.utc) - timedelta(days=30)
     history = await db_reader.get_all_state_changes(since)
     current = await ha_client.get_current_on_states()
+
+    if domains:
+        history = [c for c in history if c.entity_id.split(".", 1)[0] in domains]
+        current = {eid: v for eid, v in current.items() if eid.split(".", 1)[0] in domains}
+
     waste = await WasteDetector().run(history, current, datetime.now(timezone.utc))
 
     automated = await ha_client.get_automated_entities()
@@ -145,13 +169,19 @@ async def mine_and_emit_waste_only(
     )
     survivors = await filt.filter(waste)
 
+    states = ha_client._states or {}
     noticed = []
     for c in survivors:
         desc = await llm_describer.describe(c, user_confirmed=False)
+        s = states.get(c.entity_id, {}) or {}
+        attrs = s.get("attributes") or {}
         noticed.append({
             "miner_type": c.miner_type.value,
             "entity_id": c.entity_id,
             "action": c.action,
+            "name": attrs.get("friendly_name") or desc.title or c.entity_id,
+            "reason": desc.description,
+            "current_state": s.get("state", "?"),
             "title": desc.title,
             "description": desc.description,
             "automation_yaml": desc.automation_yaml,
@@ -174,6 +204,7 @@ async def hourly_mining_loop(
     state: dict,
     user_pattern_store=None,
     outcome_tracker=None,
+    domains: set[str] | None = None,
 ) -> None:
     while True:
         try:
@@ -181,6 +212,7 @@ async def hourly_mining_loop(
                 db_reader, signal_store, llm_describer, ha_client, state,
                 user_pattern_store=user_pattern_store,
                 outcome_tracker=outcome_tracker,
+                domains=domains,
             )
         except Exception:
             _LOGGER.exception("hourly mining failed")
@@ -194,12 +226,14 @@ async def waste_check_loop(
     ha_client: HAClient,
     state: dict,
     outcome_tracker=None,
+    domains: set[str] | None = None,
 ) -> None:
     while True:
         try:
             await mine_and_emit_waste_only(
                 db_reader, signal_store, llm_describer, ha_client, state,
                 outcome_tracker=outcome_tracker,
+                domains=domains,
             )
         except Exception:
             _LOGGER.exception("waste check failed")
@@ -298,6 +332,11 @@ class _WSLogHandler(logging.Handler):
 class SmartSuggestionsAddon:
     def __init__(self, opts: dict) -> None:
         self._opts = opts
+        # Domains the user has opted-in for mining. None means "no restriction".
+        domains_cfg = opts.get("domains")
+        self._allowed_domains: set[str] | None = (
+            set(domains_cfg) if isinstance(domains_cfg, list) and domains_cfg else None
+        )
         self._signal_store = SignalStore(db_path="/data/signals.db")
         from user_pattern_store import UserPatternStore
         from outcome_tracker import OutcomeTracker
@@ -426,6 +465,7 @@ class SmartSuggestionsAddon:
                     self._pipeline_state,
                     user_pattern_store=self._user_pattern_store,
                     outcome_tracker=self._outcome_tracker,
+                    domains=self._allowed_domains,
                 )
                 # Also run a waste check immediately since hourly_completed is now True.
                 await mine_and_emit_waste_only(
@@ -435,6 +475,7 @@ class SmartSuggestionsAddon:
                     self._ha,
                     self._pipeline_state,
                     outcome_tracker=self._outcome_tracker,
+                    domains=self._allowed_domains,
                 )
                 _LOGGER.info("Mine Now complete")
             except Exception:
@@ -491,11 +532,13 @@ class SmartSuggestionsAddon:
             self._pipeline_state,
             user_pattern_store=self._user_pattern_store,
             outcome_tracker=self._outcome_tracker,
+            domains=self._allowed_domains,
         ))
         loop.create_task(waste_check_loop(
             self._db_reader, self._signal_store, self._llm_describer, self._ha,
             self._pipeline_state,
             outcome_tracker=self._outcome_tracker,
+            domains=self._allowed_domains,
         ))
         loop.create_task(outcome_check_loop(self._outcome_tracker, self._ha))
 
