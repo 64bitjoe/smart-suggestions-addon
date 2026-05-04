@@ -65,18 +65,36 @@ async def mine_and_emit_suggestions(
     the user has opted-in to via config.yaml. State changes outside these
     domains are excluded from mining entirely.
     """
+    import time as _time
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=history_window_days)
+
+    _LOGGER.info("Pipeline: reading recorder DB (since %s)…", since.isoformat())
+    t0 = _time.monotonic()
     all_changes = await db_reader.get_all_state_changes(since)
+    _LOGGER.info("Pipeline: db_reader returned %d state changes in %.1fs",
+                 len(all_changes), _time.monotonic() - t0)
 
     # IMPORTANT: do not filter all_changes by domains. Cross-area and Sequence
     # miners need ALL entity history (including binary_sensor.*, device_tracker.*,
     # person.*) to find triggers. We filter the OUTPUT candidates by target
     # domain instead — see _candidate_target_domain_ok below.
 
+    t1 = _time.monotonic()
     temporal = await TemporalMiner().run(all_changes, now=now)
+    _LOGGER.info("Pipeline: TemporalMiner produced %d candidates in %.1fs",
+                 len(temporal), _time.monotonic() - t1)
+
+    t2 = _time.monotonic()
     sequence = await SequenceMiner().run(all_changes)
+    _LOGGER.info("Pipeline: SequenceMiner produced %d candidates in %.1fs",
+                 len(sequence), _time.monotonic() - t2)
+
+    t3 = _time.monotonic()
     cross = await CrossAreaMiner().run(all_changes)
+    _LOGGER.info("Pipeline: CrossAreaMiner produced %d candidates in %.1fs",
+                 len(cross), _time.monotonic() - t3)
+
     candidates = list(temporal) + list(sequence) + list(cross)
     raw_counts = {"temporal": len(temporal), "sequence": len(sequence), "cross": len(cross)}
 
