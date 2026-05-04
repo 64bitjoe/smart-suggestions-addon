@@ -36,6 +36,18 @@ _DENY_LIST_FILE = "/data/deny_list.json"
 MAX_SURVIVORS_PER_CYCLE = 10  # Top-N candidates by conditional_prob to describe
 
 
+def _candidate_target_domain_ok(c, domains: set[str]) -> bool:
+    """Check whether the candidate's target entity belongs to an opted-in domain.
+
+    For Temporal/CrossArea/Waste, the target IS c.entity_id.
+    For Sequence, the target is c.details['target_entity'] (the 'B' in A→B).
+    """
+    target = c.entity_id
+    if c.details and "target_entity" in c.details:
+        target = c.details["target_entity"]
+    return target.split(".", 1)[0] in domains
+
+
 async def mine_and_emit_suggestions(
     db_reader: DbReader,
     signal_store: SignalStore,
@@ -57,13 +69,25 @@ async def mine_and_emit_suggestions(
     since = now - timedelta(days=history_window_days)
     all_changes = await db_reader.get_all_state_changes(since)
 
-    if domains:
-        all_changes = [c for c in all_changes if c.entity_id.split(".", 1)[0] in domains]
+    # IMPORTANT: do not filter all_changes by domains. Cross-area and Sequence
+    # miners need ALL entity history (including binary_sensor.*, device_tracker.*,
+    # person.*) to find triggers. We filter the OUTPUT candidates by target
+    # domain instead — see _candidate_target_domain_ok below.
 
     temporal = await TemporalMiner().run(all_changes, now=now)
     sequence = await SequenceMiner().run(all_changes)
     cross = await CrossAreaMiner().run(all_changes)
     candidates = list(temporal) + list(sequence) + list(cross)
+    raw_counts = {"temporal": len(temporal), "sequence": len(sequence), "cross": len(cross)}
+
+    # Domain filter: only suggest actions on entities in the user's opted-in domains.
+    if domains:
+        before = len(candidates)
+        candidates = [c for c in candidates if _candidate_target_domain_ok(c, domains)]
+        _LOGGER.info(
+            "Candidate domain filter: %d → %d (raw temporal=%d sequence=%d cross=%d)",
+            before, len(candidates), raw_counts["temporal"], raw_counts["sequence"], raw_counts["cross"],
+        )
 
     automated_entities = await ha_client.get_automated_entities()
     filt = CandidateFilter(
@@ -71,10 +95,17 @@ async def mine_and_emit_suggestions(
         signal_store=signal_store,
         outcome_tracker=outcome_tracker,
     )
+    pre_filter = len(candidates)
     survivors = await filt.filter(candidates)
+    _LOGGER.info(
+        "CandidateFilter: %d → %d (4-criteria gate: occurrences/conditional_prob/automated/dismissed)",
+        pre_filter, len(survivors),
+    )
 
     # Cap cost: only describe top-N survivors per cycle, ranked by conditional_prob.
     survivors.sort(key=lambda c: c.conditional_prob, reverse=True)
+    if len(survivors) > MAX_SURVIVORS_PER_CYCLE:
+        _LOGGER.info("Capping describes at top %d (had %d survivors)", MAX_SURVIVORS_PER_CYCLE, len(survivors))
     survivors = survivors[:MAX_SURVIVORS_PER_CYCLE]
 
     # Append user-confirmed patterns (always surface, bypass filter and top-N cap)
@@ -155,8 +186,10 @@ async def mine_and_emit_waste_only(
     history = await db_reader.get_all_state_changes(since)
     current = await ha_client.get_current_on_states()
 
+    # Filter only the *current* live state by domains (we only want to surface
+    # waste alerts for opted-in target entities). History stays unfiltered so
+    # baseline computation has full context.
     if domains:
-        history = [c for c in history if c.entity_id.split(".", 1)[0] in domains]
         current = {eid: v for eid, v in current.items() if eid.split(".", 1)[0] in domains}
 
     waste = await WasteDetector().run(history, current, datetime.now(timezone.utc))
