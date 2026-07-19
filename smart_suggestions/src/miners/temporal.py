@@ -20,6 +20,14 @@ def _state_to_action(state: str) -> str | None:
 
 
 class TemporalMiner:
+    def __init__(
+        self,
+        min_occurrences: int = MIN_OCCURRENCES,
+        min_conditional_prob: float = MIN_CONDITIONAL_PROB,
+    ):
+        self.min_occurrences = min_occurrences
+        self.min_conditional_prob = min_conditional_prob
+
     async def run(
         self, changes: list[StateChange], now: datetime
     ) -> list[Candidate]:
@@ -46,7 +54,7 @@ class TemporalMiner:
             # two equally-strong routines (e.g. morning on + evening on) splits the
             # probability and may be rejected. v1 limitation.
             cond_prob = cluster_count / total_for_action if total_for_action else 0
-            if cond_prob < MIN_CONDITIONAL_PROB:
+            if cond_prob < self.min_conditional_prob:
                 continue
             candidates.append(
                 Candidate(
@@ -70,7 +78,7 @@ class TemporalMiner:
         """Returns the maximum-count cluster within a 2*CLUSTER_WIDTH_MINUTES span. Ties broken by leftmost position.
 
         Returns (count, center, weekdays_set) or None."""
-        if len(timestamps) < MIN_OCCURRENCES:
+        if len(timestamps) < self.min_occurrences:
             return None
         minutes_of_day = sorted((t.hour * 60 + t.minute, t.weekday()) for t in timestamps)
 
@@ -92,6 +100,6 @@ class TemporalMiner:
                 best_center = (minutes_of_day[left][0] + minutes_of_day[right][0]) // 2
                 best_weekdays = {wd for _, wd in minutes_of_day[left : right + 1]}
 
-        if best_count < MIN_OCCURRENCES:
+        if best_count < self.min_occurrences:
             return None
         return best_count, best_center, best_weekdays

@@ -10,6 +10,14 @@ MIN_CONDITIONAL_PROB = 0.7
 
 
 class SequenceMiner:
+    def __init__(
+        self,
+        min_occurrences: int = MIN_OCCURRENCES,
+        min_conditional_prob: float = MIN_CONDITIONAL_PROB,
+    ):
+        self.min_occurrences = min_occurrences
+        self.min_conditional_prob = min_conditional_prob
+
     async def run(self, changes: list[StateChange]) -> list[Candidate]:
         """Mine 'X then Y within Δt' candidate sequences.
 
@@ -46,7 +54,7 @@ class SequenceMiner:
         for (a, b), deltas in follows_with.items():
             occurrences = len(deltas)
             cond_prob = occurrences / followings[a] if followings[a] else 0
-            if occurrences < MIN_OCCURRENCES or cond_prob < MIN_CONDITIONAL_PROB:
+            if occurrences < self.min_occurrences or cond_prob < self.min_conditional_prob:
                 continue
             avg_delta = sum(deltas) / len(deltas)
             candidates.append(
