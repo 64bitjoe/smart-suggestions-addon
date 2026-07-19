@@ -1,121 +1,86 @@
-# smart_suggestions/src/automation_builder.py
-"""Generate HA automation YAML via AI, create via HAClient REST."""
+"""Deterministic pattern → HA automation config. No LLM involved."""
 from __future__ import annotations
-
-import asyncio
+import json
 import logging
-from typing import Any, TYPE_CHECKING
-
-import yaml
-
-if TYPE_CHECKING:
-    from ha_client import HAClient
 
 _LOGGER = logging.getLogger(__name__)
 
-
-def _build_automation_prompt(ctx: dict) -> str:
-    entity_id = ctx.get("entity_id", "")
-    name = ctx.get("name", entity_id)
-    raw_time = ctx.get("typical_time", "18:00")
-    typical_time = ":".join(str(raw_time).split(":")[:2])
-    days = ctx.get("days", [])
-    days_str = ", ".join(days) if days else "daily"
-    weekday_list = "[" + ", ".join(d.lower() for d in days) + "]" if days else "[]"
-
-    return f"""Generate a valid Home Assistant automation YAML to activate the scene '{name}' ({entity_id}) at {typical_time} on {days_str}.
-
-Return ONLY the raw YAML (no markdown code blocks, no explanation):
-
-alias: {name} — Auto
-trigger:
-  - platform: time
-    at: "{typical_time}:00"
-condition:
-  - condition: time
-    weekday: {weekday_list}
-action:
-  - service: scene.turn_on
-    target:
-      entity_id: {entity_id}
-mode: single
-
-Adjust the alias and logic to be clean and production-ready. Return only YAML."""
+_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
-class AutomationBuilder:
-    def __init__(self, ai_provider: str, ai_api_key: str, ai_model: str, ai_base_url: str = "") -> None:
-        self._provider = ai_provider
-        self._model = ai_model
-        self._client: Any = None
-        if ai_api_key:
-            self._init_client(ai_provider, ai_api_key, ai_base_url)
+def _service_for(action: str) -> str | None:
+    if action in ("turn_on", "set_state_on"):
+        return "homeassistant.turn_on"
+    if action in ("turn_off", "set_state_off"):
+        return "homeassistant.turn_off"
+    return None
 
-    def _init_client(self, provider: str, api_key: str, base_url: str = "") -> None:
-        try:
-            if provider == "anthropic":
-                import anthropic
-                self._client = anthropic.Anthropic(api_key=api_key)
-            elif provider == "openai_compatible":
-                import openai
-                self._client = openai.OpenAI(api_key=api_key, base_url=base_url or None)
-            else:
-                _LOGGER.warning("AutomationBuilder: unknown AI provider: %s", provider)
-        except ImportError as e:
-            _LOGGER.error("AutomationBuilder: could not import SDK: %s", e)
 
-    async def build(self, automation_context: dict, ha_client: "HAClient") -> dict:
-        """Generate automation YAML and create it in HA. Returns result dict."""
-        if not self._client:
-            return {"success": False, "error": "No AI client configured — check ai_api_key", "yaml": ""}
+def _action_step(action: str, entity_id: str) -> list[dict] | None:
+    service = _service_for(action)
+    if service is None:
+        return None
+    return [{"service": service, "target": {"entity_id": entity_id}}]
 
-        prompt = _build_automation_prompt(automation_context)
-        try:
-            raw_yaml = await asyncio.get_running_loop().run_in_executor(
-                None, self._call_api, prompt
-            )
-        except Exception as e:
-            _LOGGER.error("AutomationBuilder: AI call failed: %s", e)
-            return {"success": False, "error": str(e), "yaml": ""}
 
-        # Strip markdown code fences the AI may have added despite being told not to
-        clean_yaml = raw_yaml.strip()
-        if clean_yaml.startswith("```"):
-            parts = clean_yaml.split("```")
-            clean_yaml = parts[1] if len(parts) > 1 else clean_yaml
-            if clean_yaml.lower().startswith("yaml"):
-                clean_yaml = clean_yaml[4:].strip()
+def build_pattern_automation(row: dict) -> dict | None:
+    d = json.loads(row["details_json"])
+    mt = row["miner_type"]
+    alias = row.get("title") or f"Smart Suggestion: {row['entity_id']}"
 
-        # Parse YAML to dict for HA REST API
-        try:
-            config_dict = yaml.safe_load(clean_yaml)
-            if not isinstance(config_dict, dict):
-                raise ValueError("YAML did not produce a dict")
-        except Exception as e:
-            _LOGGER.error("AutomationBuilder: YAML parse error: %s", e)
-            return {"success": False, "error": f"YAML parse error: {e}", "yaml": raw_yaml}
+    if mt == "temporal":
+        steps = _action_step(row["action"], row["entity_id"])
+        if steps is None:
+            return None
+        weekdays = sorted(d.get("weekdays", []))
+        condition = (
+            [] if len(weekdays) >= 7
+            else [{"condition": "time", "weekday": [_WEEKDAYS[w] for w in weekdays]}]
+        )
+        return {
+            "alias": alias,
+            "trigger": [{"platform": "time", "at": f"{d['hour']:02d}:{d['minute']:02d}:00"}],
+            "condition": condition,
+            "action": steps,
+            "mode": "single",
+        }
 
-        result = await ha_client.create_automation(config_dict)
-        if not result.get("success"):
-            result["yaml"] = raw_yaml
-        return result
+    if mt == "sequence":
+        steps = _action_step(d["target_action"], d["target_entity"])
+        if steps is None:
+            return None
+        return {
+            "alias": alias,
+            "trigger": [{"platform": "state", "entity_id": row["entity_id"], "to": "on"}],
+            "condition": [],
+            "action": steps,
+            "mode": "single",
+        }
 
-    def _call_api(self, prompt: str) -> str:
-        if self._provider == "anthropic":
-            message = self._client.messages.create(
-                model=self._model,
-                max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            if not message.content:
-                raise ValueError("Anthropic returned empty content list")
-            return message.content[0].text
-        else:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=512,
-            )
-            if not response.choices:
-                raise ValueError("OpenAI returned empty choices")
-            return response.choices[0].message.content
+    if mt == "cross_area":
+        steps = _action_step(row["action"], row["entity_id"])
+        if steps is None:
+            return None
+        trig = d["trigger_entity"]
+        to_state = (
+            "home" if trig.startswith(("person.", "device_tracker.")) else "on"
+        )
+        return {
+            "alias": alias,
+            "trigger": [{"platform": "state", "entity_id": trig, "to": to_state}],
+            "condition": [],
+            "action": steps,
+            "mode": "single",
+        }
+
+    return None  # waste and anything unknown: not automatable
+
+
+async def create_pattern_automation(row: dict, ha_client) -> dict:
+    config = build_pattern_automation(row)
+    if config is None:
+        return {"success": False, "error": "pattern is not automatable"}
+    result = await ha_client.create_automation(config)
+    if not result.get("success"):
+        _LOGGER.warning("create_pattern_automation failed: %s", result.get("error"))
+    return result

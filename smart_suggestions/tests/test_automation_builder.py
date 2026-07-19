@@ -1,104 +1,60 @@
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from automation_builder import AutomationBuilder, _build_automation_prompt
+import json
+from automation_builder import build_pattern_automation
 
 
-def test_build_prompt_contains_scene_entity():
-    ctx = {
-        "entity_id": "scene.evening",
-        "name": "Evening Scene",
-        "typical_time": "18:30",
-        "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+def _row(miner_type, entity_id, action, details, title="My Pattern"):
+    return {
+        "miner_type": miner_type, "entity_id": entity_id, "action": action,
+        "details_json": json.dumps(details), "title": title,
     }
-    prompt = _build_automation_prompt(ctx)
-    assert "scene.evening" in prompt
-    assert "18:30" in prompt
-    assert "Mon" in prompt
 
 
-@pytest.mark.asyncio
-async def test_build_calls_anthropic_and_ha():
-    valid_yaml = """alias: Evening Scene Weekdays
-trigger:
-  - platform: time
-    at: "18:30:00"
-condition:
-  - condition: time
-    weekday: [mon, tue, wed, thu, fri]
-action:
-  - service: scene.turn_on
-    target:
-      entity_id: scene.evening
-mode: single"""
-
-    mock_message = MagicMock()
-    mock_message.content = [MagicMock(text=valid_yaml)]
-    mock_ai_client = MagicMock()
-    mock_ai_client.messages = MagicMock()
-    mock_ai_client.messages.create = MagicMock(return_value=mock_message)
-
-    mock_ha = MagicMock()
-    mock_ha.create_automation = AsyncMock(return_value={"success": True, "automation_id": "xyz"})
-
-    builder = AutomationBuilder(ai_provider="anthropic", ai_api_key="test", ai_model="claude-opus-4-5")
-    builder._client = mock_ai_client
-
-    ctx = {
-        "entity_id": "scene.evening",
-        "name": "Evening Scene",
-        "typical_time": "18:30",
-        "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
-    }
-    result = await builder.build(ctx, mock_ha)
-    assert result["success"] is True
-    assert result["automation_id"] == "xyz"
-    mock_ha.create_automation.assert_called_once()
+def test_temporal_automation():
+    cfg = build_pattern_automation(_row(
+        "temporal", "light.porch", "turn_on",
+        {"hour": 20, "minute": 5, "weekdays": [0, 1, 2, 3, 4]},
+    ))
+    assert cfg["trigger"] == [{"platform": "time", "at": "20:05:00"}]
+    assert cfg["condition"] == [{"condition": "time",
+        "weekday": ["mon", "tue", "wed", "thu", "fri"]}]
+    assert cfg["action"] == [{"service": "homeassistant.turn_on",
+        "target": {"entity_id": "light.porch"}}]
+    assert cfg["mode"] == "single"
 
 
-@pytest.mark.asyncio
-async def test_build_returns_yaml_on_ha_failure():
-    valid_yaml = "alias: Test\ntrigger: []\naction: []"
-    mock_message = MagicMock()
-    mock_message.content = [MagicMock(text=valid_yaml)]
-    mock_ai_client = MagicMock()
-    mock_ai_client.messages = MagicMock()
-    mock_ai_client.messages.create = MagicMock(return_value=mock_message)
-
-    mock_ha = MagicMock()
-    mock_ha.create_automation = AsyncMock(return_value={"success": False, "error": "HA error"})
-
-    builder = AutomationBuilder(ai_provider="anthropic", ai_api_key="test", ai_model="claude-opus-4-5")
-    builder._client = mock_ai_client
-
-    ctx = {"entity_id": "scene.evening", "name": "Evening", "typical_time": "18:30", "days": ["Mon"]}
-    result = await builder.build(ctx, mock_ha)
-    assert result["success"] is False
-    assert "yaml" in result
+def test_temporal_every_day_has_no_weekday_condition():
+    cfg = build_pattern_automation(_row(
+        "temporal", "light.porch", "turn_on",
+        {"hour": 7, "minute": 0, "weekdays": [0, 1, 2, 3, 4, 5, 6]},
+    ))
+    assert cfg["condition"] == []
 
 
-@pytest.mark.asyncio
-async def test_build_returns_error_when_no_client():
-    builder = AutomationBuilder(ai_provider="anthropic", ai_api_key="", ai_model="claude-opus-4-5")
-    ctx = {"entity_id": "scene.evening", "name": "Evening", "typical_time": "18:30", "days": ["Mon"]}
-    result = await builder.build(ctx, MagicMock())
-    assert result["success"] is False
+def test_sequence_automation_targets_follower():
+    cfg = build_pattern_automation(_row(
+        "sequence", "light.hall", "turn_on",
+        {"target_entity": "light.stairs", "target_action": "turn_on",
+         "delta_seconds": 30},
+    ))
+    assert cfg["trigger"] == [{"platform": "state", "entity_id": "light.hall",
+        "to": "on"}]
+    assert cfg["action"][0]["target"]["entity_id"] == "light.stairs"
 
 
-@pytest.mark.asyncio
-async def test_build_returns_error_on_invalid_yaml():
-    """When _call_api returns non-YAML content, build() should return success=False with the raw text."""
-    invalid_text = "this is not yaml: : : invalid"
-    mock_message = MagicMock()
-    mock_message.content = [MagicMock(text=invalid_text)]
-    mock_ai_client = MagicMock()
-    mock_ai_client.messages = MagicMock()
-    mock_ai_client.messages.create = MagicMock(return_value=mock_message)
+def test_cross_area_person_triggers_on_home():
+    cfg = build_pattern_automation(_row(
+        "cross_area", "light.kitchen", "set_state_on",
+        {"trigger_entity": "person.joe", "latency_bucket": "0-2m",
+         "latency_seconds": 45},
+    ))
+    assert cfg["trigger"] == [{"platform": "state", "entity_id": "person.joe",
+        "to": "home"}]
+    assert cfg["action"] == [{"service": "homeassistant.turn_on",
+        "target": {"entity_id": "light.kitchen"}}]
 
-    builder = AutomationBuilder(ai_provider="anthropic", ai_api_key="test", ai_model="claude-opus-4-5")
-    builder._client = mock_ai_client
 
-    ctx = {"entity_id": "scene.evening", "name": "Evening", "typical_time": "18:30", "days": ["Mon"]}
-    result = await builder.build(ctx, MagicMock())
-    assert result["success"] is False
-    assert "error" in result
-    assert result["yaml"] == invalid_text
+def test_waste_not_automatable():
+    assert build_pattern_automation(_row(
+        "waste", "switch.heater", "currently_on",
+        {"condition": "on_duration_anomaly"},
+    )) is None
