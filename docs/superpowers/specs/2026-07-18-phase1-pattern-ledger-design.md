@@ -126,10 +126,13 @@ Runs every 60 s off HAClient's in-memory states plus a cached ledger read:
 Listens on the HA WebSocket for `smart_suggestions_action` events:
 
 - `run` → call the service now, increment `accepted_runs`.
-- `accept` → AutomationBuilder creates a real HA automation (or scene for
-  scene-shaped patterns) grounded in the pattern's actual trigger/time data;
-  lifecycle → `automated`. Idempotent: lifecycle is checked before building,
-  so a double-tap can't create two automations.
+- `accept` → AutomationBuilder deterministically builds the automation config
+  from the pattern's mined trigger/time data (no LLM — the data fully
+  determines the automation, so generated YAML would only add failure modes)
+  and creates it via the HA REST API; lifecycle → `automated`. Idempotent:
+  lifecycle is checked before building, so a double-tap can't create two
+  automations. The LLM's only job is title/description polish at
+  confirmation time.
 - `dismiss` / `snooze` → update ledger.
 
 ### Publisher + UI
