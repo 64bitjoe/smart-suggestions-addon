@@ -5,14 +5,12 @@ FROM $BUILD_FROM
 RUN apk add --no-cache python3 py3-pip py3-aiohttp py3-yaml
 
 # Install AI SDKs via pip (not in Alpine repos)
-RUN pip3 install --no-cache-dir --break-system-packages anthropic openai aiosqlite
+RUN pip3 install --no-cache-dir --break-system-packages anthropic aiosqlite
 
 # Copy source
 WORKDIR /app
 COPY src/ ./
-
-# Copy seed patterns for first-run bootstrap
-COPY seed_patterns.json /opt/smart_suggestions/seed_patterns.json
+COPY card/ ./card/
 
 # Register as s6 service
 COPY run.sh /etc/services.d/smart_suggestions/run
