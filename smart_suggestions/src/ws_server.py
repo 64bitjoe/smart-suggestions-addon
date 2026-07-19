@@ -39,6 +39,9 @@ dashboard resource once, then add <code>custom:smart-suggestions-card</code> to 
 const ZONES = [["now","Right now"],["noticed","Noticed"],
                ["discoveries","Discovered patterns"],["emerging","Emerging (still learning)"]];
 let zones = {};
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function act(action, signature) {
   fetch("action", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({action, signature})});
@@ -49,8 +52,8 @@ function render() {
     const items = zones[key] || [];
     const body = items.length ? items.map(s => `
       <div class="item"><div class="t">
-        <div class="title">${s.title}</div><div class="desc">${s.description}</div>
-        <div class="meta">${s.miner_type} · ${(s.confidence*100).toFixed(0)}% · seen ${s.occurrences}×</div>
+        <div class="title">${esc(s.title)}</div><div class="desc">${esc(s.description)}</div>
+        <div class="meta">${esc(s.miner_type)} · ${(s.confidence*100).toFixed(0)}% · seen ${s.occurrences}×</div>
       </div><div>
         ${key==="now"||key==="noticed" ? `<button class="pri" onclick="act('run','${s.signature}')">Run</button>` : ""}
         ${s.can_automate && key!=="emerging" ? `<button class="pri" onclick="act('accept','${s.signature}')">Automate</button>` : ""}

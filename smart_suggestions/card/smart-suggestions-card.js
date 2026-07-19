@@ -10,6 +10,10 @@ const SENSORS = {
 };
 const ZONE_TITLES = { now: "Right now", discoveries: "Discovered patterns", noticed: "Noticed" };
 
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 class SmartSuggestionsCard extends HTMLElement {
   setConfig(config) { this._config = config; }
   getCardSize() { return 4; }
@@ -47,8 +51,8 @@ class SmartSuggestionsCard extends HTMLElement {
             (s, i) => `
           <div class="item">
             <div class="text">
-              <div class="title">${s.title}</div>
-              <div class="desc">${s.description}</div>
+              <div class="title">${esc(s.title)}</div>
+              <div class="desc">${esc(s.description)}</div>
             </div>
             <div class="btns" data-zone="${zone}" data-i="${i}">
               ${zone !== "discoveries" ? `<button class="run">Run</button>` : ""}

@@ -9,12 +9,13 @@ import shutil
 import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import anthropic as _anthropic
 
 from action_handler import ActionHandler
 from context_matcher import ContextMatcher
-from db_reader import DbReader
+from db_reader import DbReader, StateChange
 from ha_client import HAClient
 from ha_ws import HAEventListener
 from lifecycle import passes_emerging
@@ -107,9 +108,22 @@ class SmartSuggestionsAddon:
             ha_token=opts.get("ha_token", ""),
         )
         self._now_items: list[dict] = []
+        self._tz: ZoneInfo | None = None
+        self._waste_baselines: dict | None = None
 
     async def _noop_states_ready(self, states: dict) -> None:
         return
+
+    async def _resolve_tz(self):
+        """HA's local timezone; cached once known, system-local fallback."""
+        if self._tz is None:
+            name = await self._ha.get_timezone()
+            if name:
+                try:
+                    self._tz = ZoneInfo(name)
+                except Exception:
+                    _LOGGER.warning("Unknown HA timezone %s", name)
+        return self._tz or datetime.now(timezone.utc).astimezone().tzinfo
 
     # ── mining ──────────────────────────────────────────────────────
 
@@ -127,10 +141,17 @@ class SmartSuggestionsAddon:
             self._history_days, max(1.0, (now - changes[0].ts).total_seconds() / 86400)
         )
 
+        self._waste_baselines = WasteDetector()._compute_baseline_durations(changes)
+
+        tz = await self._resolve_tz()
+        local_changes = [
+            StateChange(c.entity_id, c.state, c.ts.astimezone(tz)) for c in changes
+        ]
+
         automated = await self._ha.get_automated_entities()
         candidates = []
         for miner_coro in (
-            TemporalMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(changes, now=now),
+            TemporalMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(local_changes, now=now.astimezone(tz)),
             SequenceMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(changes),
             CrossAreaMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(changes),
         ):
@@ -165,10 +186,8 @@ class SmartSuggestionsAddon:
 
     async def waste_once(self) -> None:
         now = datetime.now(timezone.utc)
-        since = now - timedelta(days=self._history_days)
-        history = await self._db_reader.get_all_state_changes(since)
         current = await self._ha.get_current_on_states()
-        waste = await WasteDetector().run(history, current, now)
+        waste = await WasteDetector().run([], current, now, baselines=self._waste_baselines)
         for c in waste:
             if not self._domain_ok(c.entity_id):
                 continue
@@ -208,8 +227,9 @@ class SmartSuggestionsAddon:
     async def match_once(self) -> None:
         confirmed = await self._ledger.get_rows(("confirmed",))
         rows = [r for r in confirmed if r["miner_type"] != "waste"]
+        now = datetime.now(timezone.utc).astimezone(await self._resolve_tz())
         items = self._matcher.match(
-            rows, self._ha.get_states(), datetime.now(timezone.utc)
+            rows, self._ha.get_states(), now
         )
         if [r["signature"] for r in items] != [r["signature"] for r in self._now_items]:
             self._now_items = items
@@ -266,7 +286,7 @@ class SmartSuggestionsAddon:
         await self._ws_server.stop()
         await self._router.close()
         if self._anthropic is not None:
-            await self._anthropic.aclose()
+            await self._anthropic.close()
 
 
 if __name__ == "__main__":

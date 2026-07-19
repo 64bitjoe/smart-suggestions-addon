@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Callable
 import aiohttp
@@ -67,7 +68,6 @@ class HAClient:
 
     async def _fetch_states(self) -> None:
         """Fetch all current entity states and trigger Ollama refresh if due."""
-        import time
         try:
             async with self._session.get(
                 f"{self._base}/states",
@@ -177,36 +177,72 @@ class HAClient:
         return out
 
     async def get_automated_entities(self) -> set[str]:
-        """Return set of entity_ids that appear as targets in any active automation."""
+        """Return set of entity_ids that appear as targets in any active automation.
+
+        HA has no "list all automation configs" endpoint, so we: GET /states to
+        find automation.* entities and their config ids (attributes.id), then GET
+        the config for each id individually and collect target entity_ids from its
+        actions. Tolerant of partial failure — always returns whatever was
+        collected so far, never raises.
+        """
         out: set[str] = set()
         try:
-            config_resp = await self._api_get("/config/automation/config")
-        except Exception:
-            return out  # endpoint may not be available; be tolerant
-        if isinstance(config_resp, list):
-            for auto in config_resp:
-                for action in auto.get("action") or []:
-                    target = action.get("target") or {}
-                    eid = target.get("entity_id")
-                    if isinstance(eid, str):
-                        out.add(eid)
-                    elif isinstance(eid, list):
-                        out.update(eid)
+            states = await self._api_get("/states")
+        except Exception as e:
+            _LOGGER.warning("get_automated_entities: failed to list states: %s", e)
+            return out
+
+        automation_ids = [
+            s.get("attributes", {}).get("id")
+            for s in states
+            if s.get("entity_id", "").startswith("automation.")
+        ]
+
+        for auto_id in automation_ids:
+            if not auto_id:
+                continue
+            try:
+                async with self._session.get(
+                    f"{self._base}/config/automation/config/{auto_id}",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    config = await resp.json()
+            except Exception:
+                continue
+
+            for action in config.get("action") or []:
+                if not isinstance(action, dict):
+                    continue
+                target = action.get("target") or {}
+                eid = target.get("entity_id")
+                if isinstance(eid, str):
+                    out.add(eid)
+                elif isinstance(eid, list):
+                    out.update(eid)
+
+                bare_eid = action.get("entity_id")
+                if isinstance(bare_eid, str):
+                    out.add(bare_eid)
+                elif isinstance(bare_eid, list):
+                    out.update(bare_eid)
+
         return out
 
     async def create_automation(self, config_dict: dict) -> dict:
         """Create a new HA automation via REST. Returns {success, automation_id} or {success, error}."""
         if not self._session:
             return {"success": False, "error": "No active session"}
+        new_id = str(int(time.time() * 1000))
         try:
             async with self._session.post(
-                f"{self._base}/config/automation/config",
-                json={"config": config_dict},
+                f"{self._base}/config/automation/config/{new_id}",
+                json=config_dict,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status in (200, 201):
-                    data = await resp.json()
-                    return {"success": True, "automation_id": data.get("automation_id", "")}
+                    return {"success": True, "automation_id": new_id}
                 else:
                     text = await resp.text()
                     _LOGGER.warning("create_automation HTTP %s: %s", resp.status, text)
@@ -214,3 +250,18 @@ class HAClient:
         except Exception as e:
             _LOGGER.error("create_automation failed: %s", e)
             return {"success": False, "error": str(e)}
+
+    async def get_timezone(self) -> str | None:
+        """HA-configured timezone name from GET /config, or None."""
+        if not self._session:
+            return None
+        try:
+            async with self._session.get(
+                f"{self._base}/config", timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                return data.get("time_zone")
+        except Exception:
+            return None

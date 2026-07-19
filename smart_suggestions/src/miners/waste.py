@@ -23,17 +23,22 @@ class WasteDetector:
         history: list[StateChange],
         current_states: dict[str, tuple[str, datetime]],
         now: datetime,
+        baselines: dict[str, float] | None = None,
     ) -> list[Candidate]:
         """Detect entities currently 'on' that have been on far longer than baseline.
 
-        history: 30 days of state changes, used to compute median on-duration per entity.
+        history: 30 days of state changes, used to compute median on-duration per entity
+            (ignored when baselines is provided).
         current_states: {entity_id: (state, last_changed_dt)} for live state.
         now: current time (used to compute current duration).
+        baselines: precomputed {entity_id: median_on_duration_seconds}; when given,
+            history is not re-scanned (avoids re-reading the whole history window
+            on every waste-check cycle).
 
         Emits a candidate when current duration >= MIN_DURATION_HOURS and
         >= ANOMALY_MULTIPLIER * baseline_median.
         """
-        baseline = self._compute_baseline_durations(history)
+        baseline = baselines if baselines is not None else self._compute_baseline_durations(history)
         candidates: list[Candidate] = []
 
         for entity_id, (state, since) in current_states.items():
