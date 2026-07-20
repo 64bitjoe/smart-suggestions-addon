@@ -98,6 +98,17 @@ async def test_purge_junk_removes_foreign_domains_and_actions(ledger):
     assert await ledger.get(junk_action.signature()) is None
 
 
+async def test_data_version_reset_wipes_once(ledger):
+    await ledger.upsert_evidence(_cand())
+    wiped = await ledger.ensure_data_version(2)
+    assert wiped == 1
+    assert await ledger.get(_cand().signature()) is None
+    # Same version again: no wipe
+    await ledger.upsert_evidence(_cand())
+    assert await ledger.ensure_data_version(2) == 0
+    assert await ledger.get(_cand().signature()) is not None
+
+
 async def test_mark_automated_is_idempotent(ledger):
     await ledger.upsert_evidence(_cand())
     await ledger.run_lifecycle(30.0, NOW)

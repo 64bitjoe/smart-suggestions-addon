@@ -11,6 +11,12 @@ SENSOR_NOW = "sensor.smart_suggestions_now"
 SENSOR_DISCOVERIES = "sensor.smart_suggestions_discoveries"
 SENSOR_NOTICED = "sensor.smart_suggestions_noticed"
 
+# Sensor attributes have practical size limits (recorder warns >16KB) and a
+# thousand-row discoveries list is useless UX anyway. Zones are pre-sorted
+# by conditional_prob (ledger ORDER BY), so a slice keeps the best.
+MAX_DISCOVERIES = 50
+MAX_NOTICED = 20
+
 
 def build_payload(row: dict, zone: str) -> dict:
     title = row.get("title")
@@ -45,10 +51,18 @@ class Publisher:
         self, now_items: list[dict], discovery_rows: list[dict],
         noticed_rows: list[dict],
     ) -> dict:
+        if len(discovery_rows) > MAX_DISCOVERIES:
+            _LOGGER.info(
+                "publish: %d discoveries, showing top %d",
+                len(discovery_rows), MAX_DISCOVERIES,
+            )
         zones = {
             "now": [build_payload(r, "now") for r in now_items],
-            "discoveries": [build_payload(r, "discoveries") for r in discovery_rows],
-            "noticed": [build_payload(r, "noticed") for r in noticed_rows],
+            "discoveries": [
+                build_payload(r, "discoveries")
+                for r in discovery_rows[:MAX_DISCOVERIES]
+            ],
+            "noticed": [build_payload(r, "noticed") for r in noticed_rows[:MAX_NOTICED]],
         }
         for sensor, key, name in (
             (SENSOR_NOW, "now", "Smart Suggestions: Now"),

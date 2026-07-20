@@ -201,6 +201,31 @@ class PatternLedger:
             )
             await db.commit()
 
+    async def ensure_data_version(self, version: int) -> int:
+        """Wipe all pattern rows once when the evidence semantics change
+        (e.g. the switch to deduped state changes made old occurrence counts
+        incomparable). Returns the number of rows wiped, 0 if already at
+        `version`."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER)"
+            )
+            cur = await db.execute(
+                "SELECT value FROM meta WHERE key='data_version'"
+            )
+            row = await cur.fetchone()
+            current = row[0] if row else 0
+            if current >= version:
+                return 0
+            cur = await db.execute("DELETE FROM patterns")
+            wiped = cur.rowcount
+            await db.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('data_version', ?)",
+                (version,),
+            )
+            await db.commit()
+            return wiped
+
     async def purge_junk(
         self, allowed_domains: set[str] | None, allowed_actions: set[str]
     ) -> int:

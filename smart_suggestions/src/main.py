@@ -308,6 +308,12 @@ class SmartSuggestionsAddon:
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions v4 starting")
         await self._ledger.init()
+        wiped = await self._ledger.ensure_data_version(2)
+        if wiped:
+            _LOGGER.info(
+                "Ledger data-version reset: wiped %d rows mined before "
+                "deduped evidence semantics", wiped,
+            )
         purged = await self._ledger.purge_junk(
             allowed_domains=self._domains or None,
             allowed_actions=KNOWN_ACTIONS,
