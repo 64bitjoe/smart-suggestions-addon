@@ -75,6 +75,30 @@ async def test_get_all_state_changes_without_prefix_returns_all(fake_db):
     assert timestamps == sorted(timestamps)
 
 
+async def test_get_all_state_changes_filters_by_domains(fake_db):
+    # Add a chatty sensor entity that miners never use — it must be excluded
+    # by the SQL query itself, not in Python (that's the 5 GB bug).
+    async with aiosqlite.connect(fake_db) as db:
+        await db.execute(
+            "INSERT INTO states_meta (metadata_id, entity_id) VALUES (3, 'sensor.power_meter')"
+        )
+        base = datetime(2026, 5, 1, tzinfo=timezone.utc).timestamp()
+        for i in range(50):
+            await db.execute(
+                "INSERT INTO states (metadata_id, state, last_updated_ts) VALUES (3, ?, ?)",
+                (str(i), base + i * 60),
+            )
+        await db.commit()
+
+    reader = DbReader(sqlite_path=fake_db)
+    since = datetime(2026, 4, 25, tzinfo=timezone.utc)
+    changes = await reader.get_all_state_changes(since, domains=["light", "person"])
+    assert len(changes) == 10
+    assert all(c.entity_id.startswith("light.") for c in changes)
+    # No filter still returns everything
+    assert len(await reader.get_all_state_changes(since)) == 60
+
+
 def test_db_reader_accepts_db_url():
     reader = DbReader(db_url="sqlite+aiosqlite:///tmp/test.db")
     assert reader.db_url == "sqlite+aiosqlite:///tmp/test.db"

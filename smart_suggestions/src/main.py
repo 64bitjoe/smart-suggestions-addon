@@ -130,10 +130,24 @@ class SmartSuggestionsAddon:
     def _domain_ok(self, entity_id: str) -> bool:
         return not self._domains or entity_id.split(".")[0] in self._domains
 
+    # Presence domains the CrossAreaMiner needs as triggers, on top of the
+    # user's actionable-domain allow-list.
+    _TRIGGER_DOMAINS = {"person", "device_tracker", "binary_sensor"}
+
+    def _mining_domains(self) -> list[str] | None:
+        """SQL-level domain filter — without it a busy recorder yields
+        millions of irrelevant sensor rows (gigabytes of RAM, minutes of CPU)."""
+        if not self._domains:
+            return None
+        return sorted(self._domains | self._TRIGGER_DOMAINS)
+
     async def mine_once(self) -> None:
         now = datetime.now(timezone.utc)
         since = now - timedelta(days=self._history_days)
-        changes = await self._db_reader.get_all_state_changes(since)
+        changes = await self._db_reader.get_all_state_changes(
+            since, domains=self._mining_domains()
+        )
+        _LOGGER.info("mining: loaded %d state changes", len(changes))
         if not changes:
             _LOGGER.info("mining: no history rows — skipping run")
             return

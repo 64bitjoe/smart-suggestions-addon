@@ -99,8 +99,18 @@ class DbReader:
         ]
 
     async def get_all_state_changes(
-        self, since: datetime, entity_id_prefix: str | None = None
+        self,
+        since: datetime,
+        entity_id_prefix: str | None = None,
+        domains: list[str] | None = None,
     ) -> list[StateChange]:
+        """Fetch state changes since `since`.
+
+        domains: restrict to entities in these domains (e.g. ["light", "person"]).
+        Filtering happens in SQL — on a busy recorder the irrelevant sensor
+        firehose is the overwhelming majority of rows, and materializing it
+        in Python costs gigabytes.
+        """
         since_ts = since.timestamp()
 
         if self.sqlite_path:
@@ -120,6 +130,16 @@ class DbReader:
                     .replace("_", "\\_")
                 )
                 params.append(f"{escaped}%")
+            if domains:
+                like_clauses = " OR ".join(
+                    "m.entity_id LIKE ? ESCAPE '\\'" for _ in domains
+                )
+                sql += f" AND ({like_clauses})"
+                for d in domains:
+                    escaped_d = (
+                        d.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    )
+                    params.append(f"{escaped_d}.%")
             sql += " ORDER BY s.last_updated_ts ASC"
 
             async with aiosqlite.connect(self.sqlite_path) as db:
@@ -152,6 +172,16 @@ class DbReader:
                 .replace("_", "\\_")
             )
             named_params["prefix"] = f"{escaped}%"
+        if domains:
+            like_clauses = " OR ".join(
+                f"m.entity_id LIKE :domain_{i} ESCAPE '\\'" for i in range(len(domains))
+            )
+            sql += f" AND ({like_clauses})"
+            for i, d in enumerate(domains):
+                escaped_d = (
+                    d.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
+                named_params[f"domain_{i}"] = f"{escaped_d}.%"
         sql += " ORDER BY s.last_updated_ts ASC"
 
         rows = await self._query_via_sqlalchemy(sql, named_params)
