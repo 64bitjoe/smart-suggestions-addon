@@ -3,13 +3,15 @@
 from __future__ import annotations
 import logging
 
-from llm_describer import template_description
+from lifecycle import can_promote
+from llm_describer import template_description, _friendly
 
 _LOGGER = logging.getLogger(__name__)
 
 SENSOR_NOW = "sensor.smart_suggestions_now"
 SENSOR_DISCOVERIES = "sensor.smart_suggestions_discoveries"
 SENSOR_NOTICED = "sensor.smart_suggestions_noticed"
+SENSOR_ACTIVITY = "sensor.smart_suggestions_activity"
 
 # Sensor attributes have practical size limits (recorder warns >16KB) and a
 # thousand-row discoveries list is useless UX anyway. Zones are pre-sorted
@@ -40,6 +42,21 @@ def build_payload(row: dict, zone: str) -> dict:
         "confidence": row["conditional_prob"],
         "occurrences": row["occurrences"],
         "can_automate": row["miner_type"] != "waste",
+        "lifecycle": row.get("lifecycle", ""),
+        "accepted_runs": row.get("accepted_runs", 0),
+        "can_promote": can_promote(row, act_entity),
+    }
+
+
+def build_activity_payload(entry: dict) -> dict:
+    return {
+        "activity_id": entry["id"],
+        "ts": entry["ts"],
+        "title": entry.get("title") or _friendly(entry["act_entity"]),
+        "act_entity": entry["act_entity"],
+        "act_action": entry["act_action"],
+        "undone": entry["undone"],
+        "signature": entry["signature"],
     }
 
 
@@ -49,7 +66,7 @@ class Publisher:
 
     async def publish(
         self, now_items: list[dict], discovery_rows: list[dict],
-        noticed_rows: list[dict],
+        noticed_rows: list[dict], activity_entries: list[dict],
     ) -> dict:
         if len(discovery_rows) > MAX_DISCOVERIES:
             _LOGGER.info(
@@ -63,11 +80,13 @@ class Publisher:
                 for r in discovery_rows[:MAX_DISCOVERIES]
             ],
             "noticed": [build_payload(r, "noticed") for r in noticed_rows[:MAX_NOTICED]],
+            "activity": [build_activity_payload(e) for e in activity_entries],
         }
         for sensor, key, name in (
             (SENSOR_NOW, "now", "Smart Suggestions: Now"),
             (SENSOR_DISCOVERIES, "discoveries", "Smart Suggestions: Discoveries"),
             (SENSOR_NOTICED, "noticed", "Smart Suggestions: Noticed"),
+            (SENSOR_ACTIVITY, "activity", "Smart Suggestions: Auto-Pilot"),
         ):
             await self._ha.push_sensor(
                 sensor, str(len(zones[key])),

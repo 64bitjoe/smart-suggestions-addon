@@ -317,7 +317,7 @@ class SmartSuggestionsAddon:
                 discovery_rows.append(r)
 
         zones = await self._publisher.publish(
-            self._now_items, discovery_rows, waste_rows
+            self._now_items, discovery_rows, waste_rows, []
         )
         emerging = await self._ledger.get_rows(("emerging",))
         zones["emerging"] = [build_payload(r, "emerging") for r in emerging]

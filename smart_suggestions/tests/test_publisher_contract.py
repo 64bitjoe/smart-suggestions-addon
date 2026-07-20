@@ -7,7 +7,8 @@ from publisher import build_payload
 CARD_CONTRACT = {
     "signature", "zone", "title", "description", "entity_id",
     "act_entity", "act_action", "miner_type", "confidence",
-    "occurrences", "can_automate",
+    "occurrences", "can_automate", "lifecycle", "accepted_runs",
+    "can_promote",
 }
 
 
@@ -19,6 +20,7 @@ def _row(miner_type="temporal", title="Porch at 20:00", act=None):
             {"hour": 20, "minute": 0, "weekdays": [0, 1, 2, 3, 4]}),
         "occurrences": 9, "conditional_prob": 0.83,
         "title": title, "description": "desc",
+        "lifecycle": "confirmed", "accepted_runs": 0, "dismiss_count": 0,
     }
     if act:
         row["act_entity"], row["act_action"] = act
@@ -53,3 +55,23 @@ def test_waste_rows_cannot_automate():
     p = build_payload(row, zone="noticed")
     assert p["can_automate"] is False
     assert p["act_action"] == "turn_off"  # the fix for a waste alert
+
+
+def test_can_promote_flag_in_payload():
+    row = _row(act=("light.porch", "turn_on"))
+    row["accepted_runs"] = 3
+    p = build_payload(row, zone="now")
+    assert p["can_promote"] is True
+    assert build_payload(_row(), zone="now")["can_promote"] is False
+
+
+def test_activity_payload_shape():
+    from publisher import build_activity_payload
+    p = build_activity_payload({
+        "id": 7, "ts": 1000.0, "signature": "abc", "title": None,
+        "act_entity": "light.porch", "act_action": "turn_on", "undone": 0,
+    })
+    assert set(p.keys()) == {"activity_id", "ts", "title", "act_entity",
+                             "act_action", "undone", "signature"}
+    assert p["activity_id"] == 7
+    assert "porch" in p["title"].lower()  # fallback title from entity
