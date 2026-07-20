@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 import shutil
 import signal
 from datetime import datetime, timedelta, timezone
@@ -148,9 +149,14 @@ class SmartSuggestionsAddon:
         now = datetime.now(timezone.utc)
         since = now - timedelta(days=self._history_days)
         changes = await self._db_reader.get_all_state_changes(
-            since, domains=self._mining_domains(), extra_like=self._TRIGGER_LIKE
+            since,
+            domains=self._mining_domains(),
+            extra_like=self._TRIGGER_LIKE,
+            dedup_consecutive=True,
         )
-        _LOGGER.info("mining: loaded %d state changes", len(changes))
+        _LOGGER.info("mining: loaded %d state changes (deduped)", len(changes))
+        top = Counter(c.entity_id for c in changes).most_common(5)
+        _LOGGER.info("mining: busiest entities: %s", top)
         if not changes:
             _LOGGER.info("mining: no history rows — skipping run")
             return

@@ -128,6 +128,33 @@ async def test_get_all_state_changes_extra_like_patterns(fake_db):
     assert any(i.startswith("light.") for i in ids)
 
 
+async def test_get_all_state_changes_dedup_consecutive(fake_db):
+    # Attribute-only recorder rows repeat the same state (on, on, on…).
+    # dedup_consecutive must collapse them to real transitions, and noise
+    # states (unknown/unavailable) must be excluded before dedup so
+    # on→unavailable→on collapses to a single on.
+    async with aiosqlite.connect(fake_db) as db:
+        await db.execute(
+            "INSERT INTO states_meta (metadata_id, entity_id) VALUES (6, 'light.den')"
+        )
+        base = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc).timestamp()
+        seq = ["on", "on", "on", "unavailable", "on", "off", "off", "on"]
+        for i, st in enumerate(seq):
+            await db.execute(
+                "INSERT INTO states (metadata_id, state, last_updated_ts) VALUES (6, ?, ?)",
+                (st, base + i * 60),
+            )
+        await db.commit()
+
+    reader = DbReader(sqlite_path=fake_db)
+    since = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    changes = await reader.get_all_state_changes(
+        since, domains=["light"], dedup_consecutive=True
+    )
+    den = [c.state for c in changes if c.entity_id == "light.den"]
+    assert den == ["on", "off", "on"]
+
+
 def test_db_reader_accepts_db_url():
     reader = DbReader(db_url="sqlite+aiosqlite:///tmp/test.db")
     assert reader.db_url == "sqlite+aiosqlite:///tmp/test.db"

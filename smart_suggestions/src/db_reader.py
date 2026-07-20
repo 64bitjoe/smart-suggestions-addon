@@ -104,13 +104,19 @@ class DbReader:
         entity_id_prefix: str | None = None,
         domains: list[str] | None = None,
         extra_like: list[str] | None = None,
+        dedup_consecutive: bool = False,
     ) -> list[StateChange]:
         """Fetch state changes since `since`.
 
         domains: restrict to entities in these domains (e.g. ["light", "person"]).
         extra_like: additional raw LIKE patterns OR-ed into the domain filter
         (e.g. "binary_sensor.%motion%" — patterns are used as-is, not escaped).
-        Filtering happens in SQL — on a busy recorder the irrelevant sensor
+        dedup_consecutive: drop noise states (unknown/unavailable/empty) and
+        collapse consecutive rows with an unchanged state per entity — the
+        recorder writes a row for every attribute-only update, so a light
+        left on can contribute thousands of duplicate 'on' rows that inflate
+        miner occurrence counts and row volume.
+        Filtering happens in SQL — on a busy recorder the irrelevant
         firehose is the overwhelming majority of rows, and materializing it
         in Python costs gigabytes.
         """
@@ -127,7 +133,15 @@ class DbReader:
             return patterns
 
         if self.sqlite_path:
-            sql = """
+            inner = """
+                SELECT m.entity_id, s.state, s.last_updated_ts,
+                       LAG(s.state) OVER (
+                           PARTITION BY s.metadata_id ORDER BY s.last_updated_ts
+                       ) AS prev_state
+                FROM states s
+                JOIN states_meta m ON s.metadata_id = m.metadata_id
+                WHERE s.last_updated_ts >= ?
+            """ if dedup_consecutive else """
                 SELECT m.entity_id, s.state, s.last_updated_ts
                 FROM states s
                 JOIN states_meta m ON s.metadata_id = m.metadata_id
@@ -135,7 +149,7 @@ class DbReader:
             """
             params: list = [since_ts]
             if entity_id_prefix:
-                sql += " AND m.entity_id LIKE ? ESCAPE '\\'"
+                inner += " AND m.entity_id LIKE ? ESCAPE '\\'"
                 escaped = (
                     entity_id_prefix
                     .replace("\\", "\\\\")  # escape literal backslashes first
@@ -148,9 +162,17 @@ class DbReader:
                 like_clauses = " OR ".join(
                     "m.entity_id LIKE ? ESCAPE '\\'" for _ in patterns
                 )
-                sql += f" AND ({like_clauses})"
+                inner += f" AND ({like_clauses})"
                 params.extend(patterns)
-            sql += " ORDER BY s.last_updated_ts ASC"
+            if dedup_consecutive:
+                inner += " AND s.state NOT IN ('unknown', 'unavailable', '')"
+                sql = (
+                    f"SELECT entity_id, state, last_updated_ts FROM ({inner}) "
+                    "WHERE prev_state IS NULL OR state != prev_state "
+                    "ORDER BY last_updated_ts ASC"
+                )
+            else:
+                sql = inner + " ORDER BY s.last_updated_ts ASC"
 
             async with aiosqlite.connect(self.sqlite_path) as db:
                 db.row_factory = aiosqlite.Row
@@ -166,15 +188,26 @@ class DbReader:
             ]
 
         # SQLAlchemy path — named placeholders
-        sql = """
-            SELECT m.entity_id, s.state, s.last_updated_ts
-            FROM states s
-            JOIN states_meta m ON s.metadata_id = m.metadata_id
-            WHERE s.last_updated_ts >= :since_ts
-        """
+        if dedup_consecutive:
+            inner = """
+                SELECT m.entity_id, s.state, s.last_updated_ts,
+                       LAG(s.state) OVER (
+                           PARTITION BY s.metadata_id ORDER BY s.last_updated_ts
+                       ) AS prev_state
+                FROM states s
+                JOIN states_meta m ON s.metadata_id = m.metadata_id
+                WHERE s.last_updated_ts >= :since_ts
+            """
+        else:
+            inner = """
+                SELECT m.entity_id, s.state, s.last_updated_ts
+                FROM states s
+                JOIN states_meta m ON s.metadata_id = m.metadata_id
+                WHERE s.last_updated_ts >= :since_ts
+            """
         named_params: dict = {"since_ts": since_ts}
         if entity_id_prefix:
-            sql += " AND m.entity_id LIKE :prefix ESCAPE '\\'"
+            inner += " AND m.entity_id LIKE :prefix ESCAPE '\\'"
             escaped = (
                 entity_id_prefix
                 .replace("\\", "\\\\")  # escape literal backslashes first
@@ -187,10 +220,18 @@ class DbReader:
             like_clauses = " OR ".join(
                 f"m.entity_id LIKE :domain_{i} ESCAPE '\\'" for i in range(len(patterns))
             )
-            sql += f" AND ({like_clauses})"
+            inner += f" AND ({like_clauses})"
             for i, p in enumerate(patterns):
                 named_params[f"domain_{i}"] = p
-        sql += " ORDER BY s.last_updated_ts ASC"
+        if dedup_consecutive:
+            inner += " AND s.state NOT IN ('unknown', 'unavailable', '')"
+            sql = (
+                f"SELECT entity_id, state, last_updated_ts FROM ({inner}) AS t "
+                "WHERE prev_state IS NULL OR state != prev_state "
+                "ORDER BY last_updated_ts ASC"
+            )
+        else:
+            sql = inner + " ORDER BY s.last_updated_ts ASC"
 
         rows = await self._query_via_sqlalchemy(sql, named_params)
         return [
