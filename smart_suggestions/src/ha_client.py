@@ -12,6 +12,24 @@ import aiohttp
 _LOGGER = logging.getLogger(__name__)
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
+
+
+def _collect_entity_ids(node) -> set[str]:
+    """Deep-walk any automation-config structure collecting entity_id values.
+
+    Registry UUIDs from device actions have no '.' and are skipped."""
+    out: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "entity_id":
+                values = value if isinstance(value, list) else [value]
+                out.update(v for v in values if isinstance(v, str) and "." in v)
+            else:
+                out |= _collect_entity_ids(value)
+    elif isinstance(node, list):
+        for item in node:
+            out |= _collect_entity_ids(item)
+    return out
 _DEFAULT_BASE = "http://supervisor/core/api"
 
 POLL_INTERVAL = 30          # seconds between state polls (keeps _states fresh)
@@ -177,13 +195,16 @@ class HAClient:
         return out
 
     async def get_automated_entities(self) -> set[str]:
-        """Return set of entity_ids that appear as targets in any active automation.
+        """Return set of entity_ids referenced anywhere in any automation.
 
         HA has no "list all automation configs" endpoint, so we: GET /states to
         find automation.* entities and their config ids (attributes.id), then GET
-        the config for each id individually and collect target entity_ids from its
-        actions. Tolerant of partial failure — always returns whatever was
-        collected so far, never raises.
+        the config for each id individually and deep-walk it for entity_ids —
+        both the legacy "action" and the 2024.10+ "actions"/"triggers" formats,
+        including nested if/choose/parallel blocks. Registry UUIDs from device
+        actions (no '.') are skipped. Over-collection is fine: this feeds a
+        "don't re-suggest what's already automated" exclusion. Tolerant of
+        partial failure — returns whatever was collected, never raises.
         """
         out: set[str] = set()
         try:
@@ -211,22 +232,7 @@ class HAClient:
                     config = await resp.json()
             except Exception:
                 continue
-
-            for action in config.get("action") or []:
-                if not isinstance(action, dict):
-                    continue
-                target = action.get("target") or {}
-                eid = target.get("entity_id")
-                if isinstance(eid, str):
-                    out.add(eid)
-                elif isinstance(eid, list):
-                    out.update(eid)
-
-                bare_eid = action.get("entity_id")
-                if isinstance(bare_eid, str):
-                    out.add(bare_eid)
-                elif isinstance(bare_eid, list):
-                    out.update(bare_eid)
+            out |= _collect_entity_ids(config)
 
         return out
 

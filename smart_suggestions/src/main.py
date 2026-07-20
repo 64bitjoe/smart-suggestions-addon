@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import anthropic as _anthropic
 
 from action_handler import ActionHandler
+from candidate import MinerType
 from context_matcher import ContextMatcher
 from db_reader import DbReader, StateChange
 from ha_client import HAClient
@@ -56,6 +57,9 @@ NON_ACTIONABLE_DOMAINS = {
 KNOWN_ACTIONS = {"turn_on", "turn_off", "set_state_on", "set_state_off", "currently_on"}
 # Hard cost guardrail: max LLM describe calls per mining pass.
 DESCRIBE_CAP_PER_RUN = 15
+# Sequence pairs firing within this many seconds are one group/scene command
+# fanning out across member lights, not human behavior.
+SEQUENCE_MIN_DELTA_SECONDS = 6
 
 
 def _load_options() -> dict:
@@ -163,6 +167,24 @@ class SmartSuggestionsAddon:
             return None
         return sorted((self._domains - {"binary_sensor"}) | self._TRIGGER_DOMAINS)
 
+    def _expand_exclusions(self, automated: set[str]) -> set[str]:
+        """Grow the automated-entity set with group members and the
+        switch_as_x light/switch mirror of each entity — an automation
+        targeting a group or wrapper otherwise leaks its members back in
+        as 'discovered habits'."""
+        states = self._ha.get_states()
+        expanded = set(automated)
+        for eid in automated:
+            members = states.get(eid, {}).get("attributes", {}).get("entity_id")
+            if isinstance(members, list):
+                expanded.update(m for m in members if isinstance(m, str))
+        for eid in list(expanded):
+            domain, _, object_id = eid.partition(".")
+            if domain in ("light", "switch"):
+                expanded.add(f"light.{object_id}")
+                expanded.add(f"switch.{object_id}")
+        return expanded
+
     async def mine_once(self) -> None:
         now = datetime.now(timezone.utc)
         since = now - timedelta(days=self._history_days)
@@ -189,7 +211,7 @@ class SmartSuggestionsAddon:
             StateChange(c.entity_id, c.state, c.ts.astimezone(tz)) for c in changes
         ]
 
-        automated = await self._ha.get_automated_entities()
+        automated = self._expand_exclusions(await self._ha.get_automated_entities())
         candidates = []
         for miner_coro in (
             TemporalMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(local_changes, now=now.astimezone(tz)),
@@ -207,6 +229,12 @@ class SmartSuggestionsAddon:
                 continue
             if not self._domain_ok(c.entity_id) or c.entity_id in automated:
                 continue
+            if c.miner_type == MinerType.SEQUENCE:
+                target = c.details.get("target_entity", "")
+                if c.details.get("delta_seconds", 0) < SEQUENCE_MIN_DELTA_SECONDS:
+                    continue  # group-command fanout, not a habit
+                if target in automated or not self._domain_ok(target):
+                    continue
             if passes_emerging(c.occurrences, c.conditional_prob):
                 await self._ledger.upsert_evidence(c)
                 ingested += 1
@@ -308,7 +336,7 @@ class SmartSuggestionsAddon:
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions v4 starting")
         await self._ledger.init()
-        wiped = await self._ledger.ensure_data_version(2)
+        wiped = await self._ledger.ensure_data_version(3)
         if wiped:
             _LOGGER.info(
                 "Ledger data-version reset: wiped %d rows mined before "

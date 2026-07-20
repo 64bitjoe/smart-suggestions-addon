@@ -96,3 +96,19 @@ def test_fetch_dow_history_not_present():
     assert not hasattr(HAClient, "fetch_dow_history"), (
         "fetch_dow_history should have been removed from HAClient"
     )
+
+
+def test_collect_entity_ids_deep_walk_new_actions_format():
+    from ha_client import _collect_entity_ids
+
+    # Real-world shape: HA 2024.10+ "actions" list mixing a device action
+    # (registry UUID entity_id — must be skipped) and a target entity.
+    actions = [
+        {"type": "turn_on", "device_id": "14546ff...", "entity_id": "f5b3aaa16fce", "domain": "light"},
+        {"action": "light.turn_on", "data": {}, "target": {"entity_id": "light.garage_outdoor_lights"}},
+        {"if": [{"condition": "state", "entity_id": "binary_sensor.dark"}],
+         "then": [{"action": "homeassistant.turn_on",
+                   "target": {"entity_id": ["switch.a", "switch.b"]}}]},
+    ]
+    out = _collect_entity_ids(actions)
+    assert out == {"light.garage_outdoor_lights", "binary_sensor.dark", "switch.a", "switch.b"}
