@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from automation_builder import create_pattern_automation
+from lifecycle import LIFECYCLE_AUTOPILOT, LIFECYCLE_CONFIRMED, can_promote
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ class ActionHandler:
 
     async def handle(self, data: dict) -> None:
         action = data.get("action")
+        if action == "undo":
+            await self._undo(data.get("activity_id"))
+            await self._refresh()
+            return
         sig = data.get("signature")
         if not action or not sig:
             return
@@ -63,10 +68,66 @@ class ActionHandler:
             self._matcher.suppress(sig, now + timedelta(days=14))
         elif action == "snooze":
             await self._ledger.snooze(sig, (now + SNOOZE_FOR).timestamp())
+        elif action == "promote":
+            act_entity, _ = self._resolve_act(row)
+            if can_promote(row, act_entity):
+                await self._ledger.set_lifecycle(sig, LIFECYCLE_AUTOPILOT)
+                _LOGGER.info("promoted to autopilot: %s", sig)
+            else:
+                _LOGGER.warning("promote rejected (not eligible): %s", sig)
+                return
+        elif action == "demote":
+            await self._ledger.set_lifecycle(
+                sig, LIFECYCLE_CONFIRMED, reset_runs=True
+            )
+            _LOGGER.info("demoted to suggest-only: %s", sig)
         else:
             _LOGGER.warning("unknown action: %s", action)
             return
         await self._refresh()
+
+    async def _undo(self, activity_id) -> None:
+        try:
+            activity_id = int(activity_id)
+        except (TypeError, ValueError):
+            return
+        entry = await self._ledger.get_activity(activity_id)
+        if entry is None or entry["undone"]:
+            return  # idempotent
+        service = reverse_service(entry["act_action"])
+        if service:
+            await self._ha.call_service(
+                "homeassistant", service, entry["act_entity"]
+            )
+        await self._ledger.mark_activity_undone(activity_id)
+        # Veto: back to suggest-only, trust re-earned from zero.
+        await self._ledger.set_lifecycle(
+            entry["signature"], LIFECYCLE_CONFIRMED, reset_runs=True
+        )
+        _LOGGER.info("undo: reversed activity %d, demoted %s",
+                     activity_id, entry["signature"])
+
+    async def execute_autorun(self, row: dict, now) -> bool:
+        """Execute a matched autopilot pattern. Returns True when executed."""
+        act_entity, act_action = row.get("act_entity"), row.get("act_action")
+        if not act_entity:
+            act_entity, act_action = self._resolve_act(row)
+        service = _SERVICE.get(act_action)
+        if service is None:
+            return False
+        ok = await self._ha.call_service("homeassistant", service, act_entity)
+        # Log even on failure (spec): the window fired; undo of a failed run
+        # simply demotes.
+        await self._ledger.add_activity(
+            now.timestamp(), row["signature"], act_entity, act_action
+        )
+        if ok:
+            await self._ledger.record_run(row["signature"])
+        self._matcher.suppress(row["signature"], now + RUN_SUPPRESS)
+        if not ok:
+            _LOGGER.warning("autorun service call failed: %s %s",
+                            service, act_entity)
+        return True
 
     @staticmethod
     def _resolve_act(row: dict) -> tuple[str, str]:
