@@ -201,6 +201,30 @@ class PatternLedger:
             )
             await db.commit()
 
+    async def purge_junk(
+        self, allowed_domains: set[str] | None, allowed_actions: set[str]
+    ) -> int:
+        """Delete rows whose entity domain or action fall outside the allowed
+        sets. Cleans up after config mistakes (e.g. 'sensor' in the domains
+        allow-list) that minted thousands of nonsense patterns."""
+        removed = 0
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT signature, entity_id, action FROM patterns"
+            )
+            for row in await cur.fetchall():
+                domain = row["entity_id"].split(".", 1)[0]
+                bad_domain = allowed_domains is not None and domain not in allowed_domains
+                if bad_domain or row["action"] not in allowed_actions:
+                    await db.execute(
+                        "DELETE FROM patterns WHERE signature=?",
+                        (row["signature"],),
+                    )
+                    removed += 1
+            await db.commit()
+        return removed
+
     async def mark_automated(self, sig: str, automation_id: str) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(

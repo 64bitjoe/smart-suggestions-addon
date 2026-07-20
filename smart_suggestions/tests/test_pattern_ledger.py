@@ -71,6 +71,33 @@ async def test_dismissals_bump_threshold(ledger):
     assert (await ledger.get(borderline.signature()))["lifecycle"] == "emerging"
 
 
+async def test_purge_junk_removes_foreign_domains_and_actions(ledger):
+    good = _cand()
+    await ledger.upsert_evidence(good)
+    junk_domain = Candidate(
+        miner_type=MinerType.CROSS_AREA, entity_id="sensor.cpu_util",
+        action="set_state_on", details={"trigger_entity": "person.joe",
+        "latency_bucket": "0-2m"}, occurrences=9, conditional_prob=0.9,
+    )
+    junk_action = Candidate(
+        miner_type=MinerType.CROSS_AREA, entity_id="light.hall",
+        action="set_state_42.5", details={"trigger_entity": "person.joe",
+        "latency_bucket": "0-2m"}, occurrences=9, conditional_prob=0.9,
+    )
+    await ledger.upsert_evidence(junk_domain)
+    await ledger.upsert_evidence(junk_action)
+
+    removed = await ledger.purge_junk(
+        allowed_domains={"light"},
+        allowed_actions={"turn_on", "turn_off", "set_state_on",
+                         "set_state_off", "currently_on"},
+    )
+    assert removed == 2
+    assert await ledger.get(good.signature()) is not None
+    assert await ledger.get(junk_domain.signature()) is None
+    assert await ledger.get(junk_action.signature()) is None
+
+
 async def test_mark_automated_is_idempotent(ledger):
     await ledger.upsert_evidence(_cand())
     await ledger.run_lifecycle(30.0, NOW)

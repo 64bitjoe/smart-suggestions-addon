@@ -45,6 +45,18 @@ _RECORDER_DB = "/config/home-assistant_v2.db"
 MINE_MIN_OCCURRENCES = 2
 MINE_MIN_PROB = 0.3
 
+# Domains that can never be acted on — stripped from the user's allow-list
+# (v3 configs listed 'sensor' as *context*; in v4 domains are actionable).
+NON_ACTIONABLE_DOMAINS = {
+    "sensor", "binary_sensor", "weather", "person", "device_tracker",
+    "sun", "zone",
+}
+# Actions the executor/automation builder can map to a service. Anything
+# else (e.g. cross-area 'set_state_playing' or numeric sensor states) is junk.
+KNOWN_ACTIONS = {"turn_on", "turn_off", "set_state_on", "set_state_off", "currently_on"}
+# Hard cost guardrail: max LLM describe calls per mining pass.
+DESCRIBE_CAP_PER_RUN = 15
+
 
 def _load_options() -> dict:
     try:
@@ -73,7 +85,13 @@ class _WSLogHandler(logging.Handler):
 class SmartSuggestionsAddon:
     def __init__(self, opts: dict) -> None:
         self._opts = opts
-        self._domains: set[str] = set(opts.get("domains") or [])
+        raw_domains = set(opts.get("domains") or [])
+        self._domains: set[str] = raw_domains - NON_ACTIONABLE_DOMAINS
+        if raw_domains - self._domains:
+            _LOGGER.warning(
+                "Ignoring non-actionable domains in config: %s",
+                sorted(raw_domains - self._domains),
+            )
         self._history_days = int(opts.get("history_days", 30))
         self._mining_interval = int(opts.get("mining_interval_hours", 1)) * 3600
         self._waste_interval = int(opts.get("waste_check_interval_minutes", 5)) * 60
@@ -185,6 +203,8 @@ class SmartSuggestionsAddon:
 
         ingested = 0
         for c in candidates:
+            if c.action not in KNOWN_ACTIONS:
+                continue
             if not self._domain_ok(c.entity_id) or c.entity_id in automated:
                 continue
             if passes_emerging(c.occurrences, c.conditional_prob):
@@ -200,7 +220,13 @@ class SmartSuggestionsAddon:
         await self.refresh_publish()
 
     async def _describe_pending(self) -> None:
-        for row in await self._ledger.needing_description():
+        pending = await self._ledger.needing_description()
+        if len(pending) > DESCRIBE_CAP_PER_RUN:
+            _LOGGER.warning(
+                "describe: %d pending, capping at %d this run (backlog drains hourly)",
+                len(pending), DESCRIBE_CAP_PER_RUN,
+            )
+        for row in pending[:DESCRIBE_CAP_PER_RUN]:
             await self._ledger.bump_describe_attempts(row["signature"])
             title, desc, by = await self._describer.describe(row)
             await self._ledger.save_description(
@@ -282,6 +308,12 @@ class SmartSuggestionsAddon:
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions v4 starting")
         await self._ledger.init()
+        purged = await self._ledger.purge_junk(
+            allowed_domains=self._domains or None,
+            allowed_actions=KNOWN_ACTIONS,
+        )
+        if purged:
+            _LOGGER.info("Purged %d junk ledger rows", purged)
         self._install_card()
 
         self._ws_server.register_action_handler(self._action_handler.handle)
