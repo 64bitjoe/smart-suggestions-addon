@@ -1,26 +1,33 @@
 # smart_suggestions/src/main.py
-"""Smart Suggestions Add-on — main event loop (redesigned)."""
+"""Smart Suggestions v4 — pattern ledger pipeline."""
 from __future__ import annotations
 
-import anthropic as _anthropic
 import asyncio
 import json
 import logging
+import shutil
 import signal
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from automation_builder import AutomationBuilder
+import anthropic as _anthropic
+
+from action_handler import ActionHandler
+from context_matcher import ContextMatcher
+from db_reader import DbReader, StateChange
 from ha_client import HAClient
-from usage_log import UsageLog
-from ws_server import WSServer
-from db_reader import DbReader
-from signal_store import SignalStore, SignalType
-from candidate_filter import CandidateFilter
-from llm_describer import LlmDescriber
-from miners.temporal import TemporalMiner
-from miners.sequence import SequenceMiner
+from ha_ws import HAEventListener
+from lifecycle import passes_emerging
+from llm_describer import Describer, template_description
 from miners.cross_area import CrossAreaMiner
+from miners.sequence import SequenceMiner
+from miners.temporal import TemporalMiner
 from miners.waste import WasteDetector
+from model_router import ModelRouter
+from pattern_ledger import PatternLedger
+from publisher import Publisher, build_payload
+from ws_server import WSServer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,333 +36,13 @@ logging.basicConfig(
 _LOGGER = logging.getLogger("smart_suggestions")
 
 _OPTIONS_FILE = "/data/options.json"
-_FEEDBACK_FILE = "/data/feedback.json"
-_DENY_LIST_FILE = "/data/deny_list.json"
+_CARD_SRC = "/app/card/smart-suggestions-card.js"
+_CARD_DST = "/config/www/smart-suggestions-card.js"
+_RECORDER_DB = "/config/home-assistant_v2.db"
 
-# Cost-control caps. Keep in sync with config.yaml mining options.
-MAX_SURVIVORS_PER_CYCLE = 10  # Top-N candidates by conditional_prob to describe
-
-
-def _candidate_target_domain_ok(c, domains: set[str]) -> bool:
-    """Check whether the candidate's target entity belongs to an opted-in domain.
-
-    For Temporal/CrossArea/Waste, the target IS c.entity_id.
-    For Sequence, the target is c.details['target_entity'] (the 'B' in A→B).
-    """
-    target = c.entity_id
-    if c.details and "target_entity" in c.details:
-        target = c.details["target_entity"]
-    return target.split(".", 1)[0] in domains
-
-
-async def mine_and_emit_suggestions(
-    db_reader: DbReader,
-    signal_store: SignalStore,
-    llm_describer: LlmDescriber,
-    ha_client: HAClient,
-    state: dict,
-    history_window_days: int = 30,
-    user_pattern_store=None,
-    outcome_tracker=None,
-    domains: set[str] | None = None,
-) -> None:
-    """Run all four miners, filter, describe, and write suggestions.
-
-    `domains` is the set of entity-domain prefixes (e.g. {"light","switch"})
-    the user has opted-in to via config.yaml. State changes outside these
-    domains are excluded from mining entirely.
-    """
-    import time as _time
-    now = datetime.now(timezone.utc)
-    since = now - timedelta(days=history_window_days)
-
-    _LOGGER.info("Pipeline: reading recorder DB (since %s)…", since.isoformat())
-    t0 = _time.monotonic()
-    all_changes = await db_reader.get_all_state_changes(since)
-    _LOGGER.info("Pipeline: db_reader returned %d state changes in %.1fs",
-                 len(all_changes), _time.monotonic() - t0)
-
-    # IMPORTANT: do not filter all_changes by domains. Cross-area and Sequence
-    # miners need ALL entity history (including binary_sensor.*, device_tracker.*,
-    # person.*) to find triggers. We filter the OUTPUT candidates by target
-    # domain instead — see _candidate_target_domain_ok below.
-
-    t1 = _time.monotonic()
-    temporal = await TemporalMiner().run(all_changes, now=now)
-    _LOGGER.info("Pipeline: TemporalMiner produced %d candidates in %.1fs",
-                 len(temporal), _time.monotonic() - t1)
-
-    t2 = _time.monotonic()
-    sequence = await SequenceMiner().run(all_changes)
-    _LOGGER.info("Pipeline: SequenceMiner produced %d candidates in %.1fs",
-                 len(sequence), _time.monotonic() - t2)
-
-    t3 = _time.monotonic()
-    cross = await CrossAreaMiner().run(all_changes)
-    _LOGGER.info("Pipeline: CrossAreaMiner produced %d candidates in %.1fs",
-                 len(cross), _time.monotonic() - t3)
-
-    candidates = list(temporal) + list(sequence) + list(cross)
-    raw_counts = {"temporal": len(temporal), "sequence": len(sequence), "cross": len(cross)}
-
-    # Domain filter: only suggest actions on entities in the user's opted-in domains.
-    if domains:
-        before = len(candidates)
-        candidates = [c for c in candidates if _candidate_target_domain_ok(c, domains)]
-        _LOGGER.info(
-            "Candidate domain filter: %d → %d (raw temporal=%d sequence=%d cross=%d)",
-            before, len(candidates), raw_counts["temporal"], raw_counts["sequence"], raw_counts["cross"],
-        )
-
-    automated_entities = await ha_client.get_automated_entities()
-    filt = CandidateFilter(
-        automated_entities=automated_entities,
-        signal_store=signal_store,
-        outcome_tracker=outcome_tracker,
-    )
-    pre_filter = len(candidates)
-    survivors = await filt.filter(candidates)
-    _LOGGER.info(
-        "CandidateFilter: %d → %d (4-criteria gate: occurrences/conditional_prob/automated/dismissed)",
-        pre_filter, len(survivors),
-    )
-
-    # Cap cost: only describe top-N survivors per cycle, ranked by conditional_prob.
-    survivors.sort(key=lambda c: c.conditional_prob, reverse=True)
-    if len(survivors) > MAX_SURVIVORS_PER_CYCLE:
-        _LOGGER.info("Capping describes at top %d (had %d survivors)", MAX_SURVIVORS_PER_CYCLE, len(survivors))
-    survivors = survivors[:MAX_SURVIVORS_PER_CYCLE]
-
-    # Append user-confirmed patterns (always surface, bypass filter and top-N cap)
-    if user_pattern_store is not None:
-        try:
-            user_patterns = await user_pattern_store.list_all()
-            for p in user_patterns:
-                survivors.append(_user_pattern_to_candidate(p))
-        except Exception:
-            _LOGGER.exception("Failed to load user patterns")
-
-    states = ha_client._states or {}
-
-    suggestions = []
-    for c in survivors:
-        user_confirmed = c.details.get("user_confirmed", False) if c.details else False
-        desc = await llm_describer.describe(c, user_confirmed=user_confirmed)
-        s = states.get(c.entity_id, {}) or {}
-        attrs = s.get("attributes") or {}
-        suggestions.append({
-            "miner_type": c.miner_type.value,
-            "entity_id": c.entity_id,
-            "action": c.action,
-            # Card-compatible fields (the existing card render path expects these names):
-            "name": attrs.get("friendly_name") or desc.title or c.entity_id,
-            "reason": desc.description,
-            "current_state": s.get("state", "?"),
-            # New-pipeline fields:
-            "title": desc.title,
-            "description": desc.description,
-            "automation_yaml": desc.automation_yaml,
-            "confidence": c.conditional_prob,
-            "signature": c.signature(),
-            "zone": "suggestion",
-            **({"user_confirmed": True, "user_label": c.details.get("user_label", "")} if user_confirmed else {}),
-        })
-
-    # Record pending outcomes for suggestion-zone items
-    if outcome_tracker is not None:
-        now = datetime.now(timezone.utc)
-        for s in suggestions:
-            try:
-                target = s.get("details", {})
-                target_entity = s.get("entity_id", "")
-                target_action = s.get("action", "")
-                await outcome_tracker.record_pending(
-                    signature=s["signature"],
-                    miner_type=s["miner_type"],
-                    target_entity=target_entity,
-                    target_action=target_action,
-                    suggested_at=now,
-                )
-            except Exception:
-                pass  # outcome tracking must never block suggestion emission
-
-    state["last_suggestion_zone"] = suggestions
-
-    combined = state["last_suggestion_zone"] + state.get("last_noticed_zone", [])
-    await ha_client.write_suggestions(combined)
-    state["hourly_completed"] = True
-    state["last_hourly_at"] = datetime.now(timezone.utc).isoformat()
-
-
-async def mine_and_emit_waste_only(
-    db_reader: DbReader,
-    signal_store: SignalStore,
-    llm_describer: LlmDescriber,
-    ha_client: HAClient,
-    state: dict,
-    outcome_tracker=None,
-    domains: set[str] | None = None,
-) -> None:
-    """5-minute waste-only check; refreshes only the noticed zone."""
-    if not state.get("hourly_completed", False):
-        _LOGGER.info("waste check: skipping write, hourly miner has not completed yet")
-        return
-    since = datetime.now(timezone.utc) - timedelta(days=30)
-    history = await db_reader.get_all_state_changes(since)
-    current = await ha_client.get_current_on_states()
-
-    # Filter only the *current* live state by domains (we only want to surface
-    # waste alerts for opted-in target entities). History stays unfiltered so
-    # baseline computation has full context.
-    if domains:
-        current = {eid: v for eid, v in current.items() if eid.split(".", 1)[0] in domains}
-
-    waste = await WasteDetector().run(history, current, datetime.now(timezone.utc))
-
-    automated = await ha_client.get_automated_entities()
-    filt = CandidateFilter(
-        automated_entities=automated,
-        signal_store=signal_store,
-        outcome_tracker=outcome_tracker,
-    )
-    survivors = await filt.filter(waste)
-
-    states = ha_client._states or {}
-    noticed = []
-    for c in survivors:
-        desc = await llm_describer.describe(c, user_confirmed=False)
-        s = states.get(c.entity_id, {}) or {}
-        attrs = s.get("attributes") or {}
-        noticed.append({
-            "miner_type": c.miner_type.value,
-            "entity_id": c.entity_id,
-            "action": c.action,
-            "name": attrs.get("friendly_name") or desc.title or c.entity_id,
-            "reason": desc.description,
-            "current_state": s.get("state", "?"),
-            "title": desc.title,
-            "description": desc.description,
-            "automation_yaml": desc.automation_yaml,
-            "confidence": c.conditional_prob,
-            "signature": c.signature(),
-            "zone": "noticed",
-        })
-    state["last_noticed_zone"] = noticed
-
-    combined = state.get("last_suggestion_zone", []) + state["last_noticed_zone"]
-    await ha_client.write_suggestions(combined)
-    state["last_waste_at"] = datetime.now(timezone.utc).isoformat()
-
-
-async def hourly_mining_loop(
-    db_reader: DbReader,
-    signal_store: SignalStore,
-    llm_describer: LlmDescriber,
-    ha_client: HAClient,
-    state: dict,
-    user_pattern_store=None,
-    outcome_tracker=None,
-    domains: set[str] | None = None,
-) -> None:
-    while True:
-        try:
-            await mine_and_emit_suggestions(
-                db_reader, signal_store, llm_describer, ha_client, state,
-                user_pattern_store=user_pattern_store,
-                outcome_tracker=outcome_tracker,
-                domains=domains,
-            )
-        except Exception:
-            _LOGGER.exception("hourly mining failed")
-        await asyncio.sleep(3600)
-
-
-async def waste_check_loop(
-    db_reader: DbReader,
-    signal_store: SignalStore,
-    llm_describer: LlmDescriber,
-    ha_client: HAClient,
-    state: dict,
-    outcome_tracker=None,
-    domains: set[str] | None = None,
-) -> None:
-    while True:
-        try:
-            await mine_and_emit_waste_only(
-                db_reader, signal_store, llm_describer, ha_client, state,
-                outcome_tracker=outcome_tracker,
-                domains=domains,
-            )
-        except Exception:
-            _LOGGER.exception("waste check failed")
-        await asyncio.sleep(300)
-
-
-async def outcome_check_loop(outcome_tracker, ha_client) -> None:
-    """Every 5 min, check pending outcomes against current HA state."""
-    while True:
-        try:
-            await check_pending_outcomes(outcome_tracker, ha_client)
-        except Exception:
-            _LOGGER.exception("outcome check failed")
-        await asyncio.sleep(300)
-
-
-async def check_pending_outcomes(outcome_tracker, ha_client) -> None:
-    pending = await outcome_tracker.list_pending(max_age=outcome_tracker.action_window)
-    if not pending:
-        return
-    states = getattr(ha_client, '_states', {}) or {}
-    now = datetime.now(timezone.utc)
-    for entry in pending:
-        eid = entry["target_entity"]
-        suggested_at = datetime.fromtimestamp(entry["suggested_at"], tz=timezone.utc)
-        age = (now - suggested_at).total_seconds()
-
-        s = states.get(eid)
-        if s and s.get("last_changed"):
-            try:
-                last = datetime.fromisoformat(s["last_changed"].replace("Z", "+00:00"))
-                if last >= suggested_at:
-                    action = entry["target_action"]
-                    if _action_matches(s, action):
-                        await outcome_tracker.resolve(entry["id"], "acted", last)
-                        continue
-            except Exception:
-                pass
-
-        # If past action window, mark expired
-        if age > outcome_tracker.action_window.total_seconds():
-            await outcome_tracker.resolve(entry["id"], "expired", now)
-
-
-def _action_matches(state_dict: dict, action: str) -> bool:
-    s = state_dict.get("state", "")
-    if action == "turn_on" and s in {"on", "heat", "cool", "playing", "open"}:
-        return True
-    if action == "turn_off" and s in {"off", "idle", "closed", "unlocked"}:
-        return True
-    if action.startswith("set_state_"):
-        return s == action[len("set_state_"):]
-    return False
-
-
-def _user_pattern_to_candidate(p) -> "Candidate":
-    from candidate import Candidate, MinerType
-    return Candidate(
-        miner_type=MinerType.SEQUENCE,
-        entity_id=p.trigger_entity,
-        action=p.trigger_action,
-        details={
-            "target_entity": p.target_entity,
-            "target_action": p.target_action,
-            "delta_seconds": p.latency_seconds,
-            "user_confirmed": True,
-            "user_label": p.label,
-        },
-        occurrences=999,
-        conditional_prob=1.0,
-    )
+# Miners emit permissively; the ledger's adaptive lifecycle decides.
+MINE_MIN_OCCURRENCES = 2
+MINE_MIN_PROB = 0.3
 
 
 def _load_options() -> dict:
@@ -375,7 +62,9 @@ class _WSLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._ws.broadcast_log(record.levelname, self.format(record)))
+            loop.create_task(
+                self._ws.broadcast_log(record.levelname, self.format(record))
+            )
         except Exception:
             pass
 
@@ -383,237 +72,223 @@ class _WSLogHandler(logging.Handler):
 class SmartSuggestionsAddon:
     def __init__(self, opts: dict) -> None:
         self._opts = opts
-        # Domains the user has opted-in for mining. None means "no restriction".
-        domains_cfg = opts.get("domains")
-        self._allowed_domains: set[str] | None = (
-            set(domains_cfg) if isinstance(domains_cfg, list) and domains_cfg else None
-        )
-        self._signal_store = SignalStore(db_path="/data/signals.db")
-        from user_pattern_store import UserPatternStore
-        from outcome_tracker import OutcomeTracker
-        self._user_pattern_store = UserPatternStore(db_path="/data/user_patterns.db")
-        self._outcome_tracker = OutcomeTracker(db_path="/data/outcomes.db")
-        self._ws_server = WSServer(
-            signal_store=self._signal_store,
-            user_pattern_store=self._user_pattern_store,
-            outcome_tracker=self._outcome_tracker,
-        )
-        _key = opts.get("ai_api_key", "")
-        _ai_model = opts.get("ai_model", "claude-haiku-4-5-20251001")
-        _LOGGER.info("AI key loaded: %s (len=%d)", (_key[:8] + "...") if _key else "EMPTY", len(_key))
-        _LOGGER.info("Model: %s", _ai_model)
-        self._automation_builder = AutomationBuilder(
-            ai_provider=opts.get("ai_provider", "anthropic"),
-            ai_api_key=_key,
-            ai_model=_ai_model,
-            ai_base_url=opts.get("ai_base_url", ""),
-        )
-        self._usage_log = UsageLog("/data/usage.db")
-        self._deny_set: set[str] = self._load_deny_list()
-        self._ha: HAClient | None = None
-        self._last_states: dict = {}
-        self._running = True
-        self._ha_connected: bool = False
-        self._last_refresh_str: str = "Never"
-        self._anthropic_client = None
-        self._db_reader: DbReader | None = None
-        self._llm_describer: LlmDescriber | None = None
-        self._pipeline_state: dict = {
-            "last_suggestion_zone": [],
-            "last_noticed_zone": [],
-            "hourly_completed": False,
-            "last_hourly_at": None,
-            "last_waste_at": None,
-        }
-        # Lock to prevent concurrent Mine Now invocations (e.g. double-click).
-        self._mine_now_lock = asyncio.Lock()
+        self._domains: set[str] = set(opts.get("domains") or [])
+        self._history_days = int(opts.get("history_days", 30))
+        self._mining_interval = int(opts.get("mining_interval_hours", 1)) * 3600
+        self._waste_interval = int(opts.get("waste_check_interval_minutes", 5)) * 60
 
-    def _push_system_status(self) -> None:
-        ps = self._pipeline_state
-        status = {
-            "ha_connected": self._ha_connected,
-            "entity_count": len(self._last_states),
-            "last_refresh": self._last_refresh_str,
-            "last_hourly_completed_at": ps.get("last_hourly_at"),
-            "last_waste_at": ps.get("last_waste_at"),
-            "suggestion_zone_count": len(ps.get("last_suggestion_zone", [])),
-            "noticed_zone_count": len(ps.get("last_noticed_zone", [])),
-        }
-        self._ws_server.set_system_status(status)
+        self._ledger = PatternLedger("/data/patterns.db")
+        self._matcher = ContextMatcher(max_now=int(opts.get("max_now_suggestions", 5)))
+        self._ws_server = WSServer()
+        self._db_reader = DbReader(sqlite_path=_RECORDER_DB)
+
+        key = opts.get("ai_api_key", "")
+        self._anthropic = _anthropic.AsyncAnthropic(api_key=key) if key else None
+        self._router = ModelRouter(
+            anthropic_client=self._anthropic,
+            primary_model=opts.get("ai_model", "claude-haiku-4-5-20251001"),
+            secondary_base_url=opts.get("secondary_base_url", ""),
+            secondary_model=opts.get("secondary_model", ""),
+            describe_backend=opts.get("describe_backend", "primary"),
+        )
+        self._describer = Describer(self._router)
+
+        self._ha = HAClient(
+            on_states_ready=self._noop_states_ready,
+            ha_url=opts.get("ha_url", ""),
+            ha_token=opts.get("ha_token", ""),
+        )
+        self._publisher = Publisher(self._ha)
+        self._action_handler = ActionHandler(
+            self._ledger, self._ha, self._matcher, self.refresh_publish
+        )
+        self._listener = HAEventListener(
+            on_event=self._action_handler.handle,
+            ha_url=opts.get("ha_url", ""),
+            ha_token=opts.get("ha_token", ""),
+        )
+        self._now_items: list[dict] = []
+        self._tz: ZoneInfo | None = None
+        self._waste_baselines: dict | None = None
+
+    async def _noop_states_ready(self, states: dict) -> None:
+        return
+
+    async def _resolve_tz(self):
+        """HA's local timezone; cached once known, system-local fallback."""
+        if self._tz is None:
+            name = await self._ha.get_timezone()
+            if name:
+                try:
+                    self._tz = ZoneInfo(name)
+                except Exception:
+                    _LOGGER.warning("Unknown HA timezone %s", name)
+        return self._tz or datetime.now(timezone.utc).astimezone().tzinfo
+
+    # ── mining ──────────────────────────────────────────────────────
+
+    def _domain_ok(self, entity_id: str) -> bool:
+        return not self._domains or entity_id.split(".")[0] in self._domains
+
+    async def mine_once(self) -> None:
+        now = datetime.now(timezone.utc)
+        since = now - timedelta(days=self._history_days)
+        changes = await self._db_reader.get_all_state_changes(since)
+        if not changes:
+            _LOGGER.info("mining: no history rows — skipping run")
+            return
+        history_days = min(
+            self._history_days, max(1.0, (now - changes[0].ts).total_seconds() / 86400)
+        )
+
+        self._waste_baselines = WasteDetector()._compute_baseline_durations(changes)
+
+        tz = await self._resolve_tz()
+        local_changes = [
+            StateChange(c.entity_id, c.state, c.ts.astimezone(tz)) for c in changes
+        ]
+
+        automated = await self._ha.get_automated_entities()
+        candidates = []
+        for miner_coro in (
+            TemporalMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(local_changes, now=now.astimezone(tz)),
+            SequenceMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(changes),
+            CrossAreaMiner(MINE_MIN_OCCURRENCES, MINE_MIN_PROB).run(changes),
+        ):
+            try:
+                candidates.extend(await miner_coro)
+            except Exception:
+                _LOGGER.exception("miner failed — continuing")
+
+        ingested = 0
+        for c in candidates:
+            if not self._domain_ok(c.entity_id) or c.entity_id in automated:
+                continue
+            if passes_emerging(c.occurrences, c.conditional_prob):
+                await self._ledger.upsert_evidence(c)
+                ingested += 1
+
+        newly = await self._ledger.run_lifecycle(history_days, now)
+        _LOGGER.info(
+            "mining: %d candidates, %d ingested, %d newly confirmed",
+            len(candidates), ingested, len(newly),
+        )
+        await self._describe_pending()
+        await self.refresh_publish()
+
+    async def _describe_pending(self) -> None:
+        for row in await self._ledger.needing_description():
+            await self._ledger.bump_describe_attempts(row["signature"])
+            title, desc, by = await self._describer.describe(row)
+            await self._ledger.save_description(
+                row["signature"], title, desc, "", by
+            )
+
+    async def waste_once(self) -> None:
+        now = datetime.now(timezone.utc)
+        current = await self._ha.get_current_on_states()
+        waste = await WasteDetector().run([], current, now, baselines=self._waste_baselines)
+        for c in waste:
+            if not self._domain_ok(c.entity_id):
+                continue
+            # Waste is urgent: enters the ledger as confirmed, template-described.
+            await self._ledger.upsert_evidence(c, initial_lifecycle="confirmed")
+            row = await self._ledger.get(c.signature())
+            if row and not row["title"]:
+                title, desc = template_description(row)
+                await self._ledger.save_description(
+                    c.signature(), title, desc, "", "template"
+                )
+        await self.refresh_publish()
+
+    # ── publishing ──────────────────────────────────────────────────
+
+    async def refresh_publish(self) -> None:
+        now = datetime.now(timezone.utc)
+        confirmed = await self._ledger.get_rows(("confirmed",))
+        waste_rows, discovery_rows = [], []
+        stale_cutoff = now.timestamp() - 2 * self._waste_interval
+        for r in confirmed:
+            if r["miner_type"] == "waste":
+                snoozed = r["snoozed_until"] and r["snoozed_until"] > now.timestamp()
+                if r["last_seen"] >= stale_cutoff and not snoozed:
+                    waste_rows.append(r)
+            else:
+                discovery_rows.append(r)
+
+        zones = await self._publisher.publish(
+            self._now_items, discovery_rows, waste_rows
+        )
+        emerging = await self._ledger.get_rows(("emerging",))
+        zones["emerging"] = [build_payload(r, "emerging") for r in emerging]
+        self._ws_server.set_zones(zones)
+        await self._ws_server.broadcast_zones()
+
+    async def match_once(self) -> None:
+        confirmed = await self._ledger.get_rows(("confirmed",))
+        rows = [r for r in confirmed if r["miner_type"] != "waste"]
+        now = datetime.now(timezone.utc).astimezone(await self._resolve_tz())
+        items = self._matcher.match(
+            rows, self._ha.get_states(), now
+        )
+        if [r["signature"] for r in items] != [r["signature"] for r in self._now_items]:
+            self._now_items = items
+            await self.refresh_publish()
+        else:
+            self._now_items = items
+
+    # ── loops ───────────────────────────────────────────────────────
+
+    async def _loop(self, fn, interval: int, name: str) -> None:
+        while True:
+            try:
+                await fn()
+            except Exception:
+                _LOGGER.exception("%s failed", name)
+            await asyncio.sleep(interval)
 
     @staticmethod
-    def _load_deny_list() -> set[str]:
+    def _install_card() -> None:
         try:
-            with open(_DENY_LIST_FILE) as f:
-                data = json.load(f)
-            return set(data) if isinstance(data, list) else set()
-        except (FileNotFoundError, json.JSONDecodeError):
-            return set()
-
-    def _save_deny_list(self) -> None:
-        with open(_DENY_LIST_FILE, "w") as f:
-            json.dump(sorted(self._deny_set), f)
-
-    async def _on_deny_entity(self, entity_id: str) -> None:
-        self._deny_set.add(entity_id)
-        self._save_deny_list()
-        _LOGGER.info("Entity denied: %s (%d total) — will take effect on next mining cycle", entity_id, len(self._deny_set))
-
-    async def _on_undeny_entity(self, entity_id: str) -> None:
-        self._deny_set.discard(entity_id)
-        self._save_deny_list()
-        _LOGGER.info("Entity un-denied: %s (%d total)", entity_id, len(self._deny_set))
-
-    async def _on_states_ready(self, states: dict) -> None:
-        self._last_states = states
-        if not self._ha_connected:
-            self._ha_connected = True
-            self._push_system_status()
-
-    async def _on_feedback(self, entity_id: str, vote: str) -> None:
-        outcome = "run" if vote == "up" else "dismissed"
-        await self._usage_log.log(entity_id, "", outcome, 0.0)
-        _LOGGER.info("Feedback logged: %s %s", entity_id, outcome)
-
-    async def _on_save_automation(self, suggestion: dict) -> None:
-        _LOGGER.info("Save as automation requested: %s", suggestion.get("entity_id"))
-        ctx = suggestion.get("automation_context") or {}
-        ctx["entity_id"] = suggestion.get("entity_id", "")
-        ctx["name"] = suggestion.get("name", "")
-        result = await self._automation_builder.build(ctx, self._ha)
-        await self._ws_server.broadcast_automation_result(result)
-
-    async def _on_trigger_refresh(self) -> None:
-        """Re-broadcast last cached suggestions. Does NOT re-run mining."""
-        combined = (
-            self._pipeline_state.get("last_suggestion_zone", []) +
-            self._pipeline_state.get("last_noticed_zone", [])
-        )
-        await self._ws_server.broadcast_suggestions(combined)
-
-    async def _on_trigger_refresh_all(self) -> None:
-        """User-initiated trigger — runs the full mining pipeline immediately.
-
-        Guarded by an asyncio.Lock so accidental double-clicks (or rapid retries)
-        don't start parallel mining cycles, which would multiply Claude API costs
-        with no benefit.
-        """
-        if self._mine_now_lock.locked():
-            _LOGGER.info("Mine Now ignored — a cycle is already running")
-            return
-        async with self._mine_now_lock:
-            _LOGGER.info("Mine Now triggered")
-            if not self._db_reader or not self._llm_describer or not self._ha:
-                _LOGGER.warning("Mine Now: pipeline not ready yet (db_reader=%s, llm_describer=%s, ha=%s)",
-                                self._db_reader, self._llm_describer, self._ha)
-                return
-            try:
-                await mine_and_emit_suggestions(
-                    self._db_reader,
-                    self._signal_store,
-                    self._llm_describer,
-                    self._ha,
-                    self._pipeline_state,
-                    user_pattern_store=self._user_pattern_store,
-                    outcome_tracker=self._outcome_tracker,
-                    domains=self._allowed_domains,
-                )
-                # Also run a waste check immediately since hourly_completed is now True.
-                await mine_and_emit_waste_only(
-                    self._db_reader,
-                    self._signal_store,
-                    self._llm_describer,
-                    self._ha,
-                    self._pipeline_state,
-                    outcome_tracker=self._outcome_tracker,
-                    domains=self._allowed_domains,
-                )
-                _LOGGER.info("Mine Now complete")
-            except Exception:
-                _LOGGER.exception("Mine Now failed")
-            finally:
-                # Push status so UI reflects new last_hourly_at / counts immediately.
-                self._push_system_status()
+            Path(_CARD_DST).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(_CARD_SRC, _CARD_DST)
+            _LOGGER.info("Card installed to %s", _CARD_DST)
+        except Exception as e:
+            _LOGGER.warning("Card install failed (%s) — see panel for manual setup", e)
 
     async def run(self) -> None:
-        _LOGGER.info("Smart Suggestions starting")
-        self._ws_server.register_feedback_handler(self._on_feedback)
-        self._ws_server.register_refresh_handler(self._on_trigger_refresh)
-        self._ws_server.register_refresh_all_handler(self._on_trigger_refresh_all)
-        self._ws_server.register_automation_handler(self._on_save_automation)
-        self._ws_server.register_deny_handler(self._on_deny_entity)
-        self._ws_server.register_undeny_handler(self._on_undeny_entity)
-        self._ws_server.set_deny_list(self._deny_set)
-        self._ws_server.set_usage_log(self._usage_log)
-        self._ws_server.set_automation_builder(self._automation_builder)
-        self._push_system_status()
+        _LOGGER.info("Smart Suggestions v4 starting")
+        await self._ledger.init()
+        self._install_card()
+
+        self._ws_server.register_action_handler(self._action_handler.handle)
         await self._ws_server.start()
-        await self._usage_log.start()
-        await self._usage_log.migrate_from_json(_FEEDBACK_FILE)
 
         log_handler = _WSLogHandler(self._ws_server)
         log_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
-        log_handler.setLevel(logging.DEBUG)
         logging.getLogger().addHandler(log_handler)
-
-        self._ha = HAClient(
-            on_states_ready=self._on_states_ready,
-            refresh_interval_seconds=int(self._opts.get("refresh_interval", 10)),
-            ha_url=self._opts.get("ha_url", ""),
-            ha_token=self._opts.get("ha_token", ""),
-        )
-        self._ws_server.set_ha_client(self._ha)
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.create_task(self._shutdown()))
 
-        self._db_reader = DbReader(sqlite_path="/config/home-assistant_v2.db")
-        self._anthropic_client = _anthropic.AsyncAnthropic(
-            api_key=self._opts.get("ai_api_key", "")
-        )
-        self._llm_describer = LlmDescriber(
-            client=self._anthropic_client,
-            cache_path="/data/llm_cache.db",
-            model=self._opts.get("ai_model", "claude-haiku-4-5-20251001"),
-        )
-        self._ws_server.set_pipeline_state(self._pipeline_state, self._opts)
-        loop.create_task(hourly_mining_loop(
-            self._db_reader, self._signal_store, self._llm_describer, self._ha,
-            self._pipeline_state,
-            user_pattern_store=self._user_pattern_store,
-            outcome_tracker=self._outcome_tracker,
-            domains=self._allowed_domains,
-        ))
-        loop.create_task(waste_check_loop(
-            self._db_reader, self._signal_store, self._llm_describer, self._ha,
-            self._pipeline_state,
-            outcome_tracker=self._outcome_tracker,
-            domains=self._allowed_domains,
-        ))
-        loop.create_task(outcome_check_loop(self._outcome_tracker, self._ha))
+        loop.create_task(self._loop(self.mine_once, self._mining_interval, "mining"))
+        loop.create_task(self._loop(self.waste_once, self._waste_interval, "waste check"))
+        loop.create_task(self._loop(self.match_once, 60, "context match"))
+        loop.create_task(self._listener.run())
 
         await self._ha.start()  # blocks forever — keeps event loop alive
 
     async def _shutdown(self) -> None:
         _LOGGER.info("Shutting down...")
-        self._running = False
-        if self._ha:
-            await self._ha.stop()
+        self._listener.stop()
+        await self._ha.stop()
         await self._ws_server.stop()
-        if self._anthropic_client is not None:
-            # SDK >= 0.20 exposes aclose(); older versions only have close().
-            close_fn = getattr(self._anthropic_client, "aclose", None) or getattr(
-                self._anthropic_client, "close", None
-            )
-            if close_fn is not None:
-                try:
-                    await close_fn()
-                except Exception:
-                    _LOGGER.exception("Anthropic client close failed (non-fatal)")
+        await self._router.close()
+        if self._anthropic is not None:
+            await self._anthropic.close()
 
 
 if __name__ == "__main__":
-    opts = _load_options()
-    addon = SmartSuggestionsAddon(opts)
+    addon = SmartSuggestionsAddon(_load_options())
     asyncio.run(addon.run())

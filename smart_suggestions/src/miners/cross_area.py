@@ -36,6 +36,14 @@ def _latency_bucket(seconds: float) -> str:
 
 
 class CrossAreaMiner:
+    def __init__(
+        self,
+        min_occurrences: int = MIN_OCCURRENCES,
+        min_conditional_prob: float = MIN_CONDITIONAL_PROB,
+    ):
+        self.min_occurrences = min_occurrences
+        self.min_conditional_prob = min_conditional_prob
+
     async def run(self, changes: list[StateChange]) -> list[Candidate]:
         """Mine cross-area patterns where presence/arrival triggers an entity action.
 
@@ -79,7 +87,7 @@ class CrossAreaMiner:
         for (trig, tgt_entity, tgt_state), latencies in co.items():
             occurrences = len(latencies)
             cond_prob = occurrences / trigger_counts[trig] if trigger_counts[trig] else 0
-            if occurrences < MIN_OCCURRENCES or cond_prob < MIN_CONDITIONAL_PROB:
+            if occurrences < self.min_occurrences or cond_prob < self.min_conditional_prob:
                 continue
             avg_lat = sum(latencies) / len(latencies)
             candidates.append(

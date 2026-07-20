@@ -9,7 +9,7 @@ async def test_create_automation_success():
 
     mock_resp = AsyncMock()
     mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value={"automation_id": "abc123"})
+    mock_resp.json = AsyncMock(return_value={"result": "ok"})
     mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -21,10 +21,13 @@ async def test_create_automation_success():
 
     result = await client.create_automation({"alias": "Test", "trigger": []})
     assert result["success"] is True
-    assert result["automation_id"] == "abc123"
+    assert result["automation_id"].isdigit()
     mock_session.post.assert_called_once()
     call_url = str(mock_session.post.call_args[0][0])
-    assert "/config/automation/config" in call_url
+    assert "/config/automation/config/" in call_url
+    assert call_url.rsplit("/", 1)[-1] == result["automation_id"]
+    call_kwargs = mock_session.post.call_args[1]
+    assert call_kwargs["json"] == {"alias": "Test", "trigger": []}
 
 
 @pytest.mark.asyncio

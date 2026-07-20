@@ -1,142 +1,94 @@
+"""Turn a confirmed ledger row into user-facing title + description.
+
+LLM output is polish only — template_description() always works and is the
+fallback (and the only path for waste alerts).
+"""
 from __future__ import annotations
-import aiosqlite
 import json
+import logging
 import re
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from candidate import Candidate
+
+from model_router import ModelRouter, RouterError
+
+_LOGGER = logging.getLogger(__name__)
+
+_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-DEFAULT_TTL = timedelta(days=7)
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+def _friendly(entity_id: str) -> str:
+    return entity_id.split(".", 1)[-1].replace("_", " ").title()
 
 
-@dataclass(frozen=True)
-class Description:
-    title: str
-    description: str
-    automation_yaml: str
+def _weekdays_text(weekdays: list[int]) -> str:
+    if sorted(weekdays) == [0, 1, 2, 3, 4]:
+        return "weekdays"
+    if sorted(weekdays) == [5, 6]:
+        return "weekends"
+    if len(weekdays) >= 7:
+        return "every day"
+    return "/".join(_WEEKDAY_NAMES[d] for d in sorted(weekdays))
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+def template_description(row: dict) -> tuple[str, str]:
+    d = json.loads(row["details_json"])
+    name = _friendly(row["entity_id"])
+    verb = "Turn on" if "on" in row["action"] else "Turn off"
+    pct = f"{row['conditional_prob']:.0%}"
+    mt = row["miner_type"]
+    if mt == "temporal":
+        t = f"{d['hour']:02d}:{d['minute']:02d}"
+        title = f"{verb} {name} at {t}"
+        desc = (f"You do this around {t} on {_weekdays_text(d['weekdays'])} — "
+                f"{pct} of the time ({row['occurrences']} times).")
+    elif mt == "sequence":
+        tgt = _friendly(d["target_entity"])
+        title = f"{tgt} follows {name}"
+        desc = (f"When {name} turns on, {tgt} usually turns on within "
+                f"{d['delta_seconds']}s — {pct} of the time.")
+    elif mt == "cross_area":
+        trig = _friendly(d["trigger_entity"])
+        title = f"{verb} {name} when {trig} arrives"
+        desc = (f"After {trig} shows up, {name} usually changes within "
+                f"{d['latency_bucket']} — {pct} of the time.")
+    else:  # waste
+        hours = d["duration_seconds"] / 3600.0
+        base = d["baseline_seconds"] / 3600.0
+        title = f"{name} left on?"
+        desc = (f"{name} has been on for {hours:.1f} h — "
+                f"it usually runs about {base:.1f} h.")
+    return title, desc
+
+
+def _build_prompt(row: dict) -> str:
+    return f"""You write one Home Assistant suggestion for a statistically-validated pattern.
+Pattern type: {row['miner_type']}
+Entity: {row['entity_id']}
+Action: {row['action']}
+Details: {row['details_json']}
+Occurrences: {row['occurrences']}, conditional probability: {row['conditional_prob']:.2f}
+
+Respond with ONLY a JSON object: {{"title": "≤60 chars, friendly", "description": "one warm, concrete sentence"}}"""
 
 
 def _strip_json_fences(text: str) -> str:
-    """Strip optional ```json ... ``` markdown fences from an LLM response."""
     s = text.strip()
     if s.startswith("```"):
-        # Remove opening fence (with optional language tag)
         s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
-        # Remove trailing fence
         s = re.sub(r"\n?```\s*$", "", s)
     return s.strip()
 
 
-def _build_prompt(c: Candidate, user_confirmed: bool = False) -> str:
-    prefix = ""
-    if user_confirmed:
-        prefix = "This is a USER-CONFIRMED pattern (the user explicitly told us about it). Generate the description and YAML accordingly.\n"
-    return f"""{prefix}You generate Home Assistant automation suggestions from already-validated patterns.
-Pattern: {c.miner_type.value}
-Entity: {c.entity_id}
-Action: {c.action}
-Details: {json.dumps(c.details, sort_keys=True)}
-Occurrences: {c.occurrences}
-Conditional probability: {c.conditional_prob:.2f}
+class Describer:
+    def __init__(self, router: ModelRouter):
+        self._router = router
 
-Respond with a single JSON object with keys: title (string, ≤60 chars), description (string, one sentence), automation_yaml (string, valid HA automation YAML — alias, trigger, action). No prose, no markdown fences. Just JSON.
-"""
-
-
-class LlmDescriber:
-    def __init__(
-        self,
-        client,
-        cache_path: str | Path,
-        model: str = DEFAULT_MODEL,
-        ttl: timedelta = DEFAULT_TTL,
-    ):
-        self.client = client
-        self.cache_path = Path(cache_path)
-        self.model = model
-        self.ttl = ttl
-        self._initialized = False
-
-    async def init(self):
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.cache_path) as db:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS llm_cache (
-                    signature TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    automation_yaml TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-            """)
-            await db.commit()
-        self._initialized = True
-
-    async def _ensure_initialized(self):
-        if not self._initialized:
-            await self.init()
-
-    async def describe(self, candidate: Candidate, user_confirmed: bool = False) -> Description:
-        await self._ensure_initialized()
-        # Cache key includes the user_confirmed flag so confirmed and unconfirmed
-        # variants of the same signature get separate cache entries (the prompt
-        # differs). Both ARE cached — repeat cycles never re-bill Claude.
-        sig = candidate.signature() + (":uc" if user_confirmed else "")
-        cached = await self._get_cached(sig)
-        if cached:
-            return cached
-
-        prompt = _build_prompt(candidate, user_confirmed=user_confirmed)
-        resp = await self.client.messages.create(
-            model=self.model,
-            max_tokens=900,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = resp.content[0].text
-        stripped = _strip_json_fences(text)
+    async def describe(self, row: dict) -> tuple[str, str, str]:
+        """Return (title, description, described_by). Never raises."""
         try:
-            payload = json.loads(stripped)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"LLM returned non-JSON: {text!r}") from e
-
-        desc = Description(
-            title=str(payload["title"]),
-            description=str(payload["description"]),
-            automation_yaml=str(payload["automation_yaml"]),
-        )
-        await self._store(sig, desc)
-        return desc
-
-    async def _get_cached(self, sig: str) -> Description | None:
-        cutoff = (_now() - self.ttl).timestamp()
-        async with aiosqlite.connect(self.cache_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM llm_cache WHERE signature = ? AND created_at >= ?",
-                (sig, cutoff),
-            )
-            row = await cursor.fetchone()
-        if not row:
-            return None
-        return Description(
-            title=row["title"],
-            description=row["description"],
-            automation_yaml=row["automation_yaml"],
-        )
-
-    async def _store(self, sig: str, desc: Description):
-        async with aiosqlite.connect(self.cache_path) as db:
-            await db.execute(
-                """INSERT OR REPLACE INTO llm_cache
-                   (signature, title, description, automation_yaml, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (sig, desc.title, desc.description, desc.automation_yaml, _now().timestamp()),
-            )
-            await db.commit()
+            text = await self._router.complete(_build_prompt(row), max_tokens=300)
+            payload = json.loads(_strip_json_fences(text))
+            return str(payload["title"]), str(payload["description"]), "llm"
+        except (RouterError, KeyError, ValueError, TypeError) as e:
+            _LOGGER.warning("describe fell back to template: %s", e)
+            title, desc = template_description(row)
+            return title, desc, "template"
