@@ -167,6 +167,28 @@ class SmartSuggestionsAddon:
             return None
         return sorted((self._domains - {"binary_sensor"}) | self._TRIGGER_DOMAINS)
 
+    @staticmethod
+    def _dedup_mirrors(candidates: list) -> list:
+        """A switch_as_x wrapper mirrors every state change of its source, so
+        light.X and switch.X mine identical patterns. Keep one per
+        (object_id, action, pattern identity), preferring the light wrapper
+        (that's the entity the user actually sees)."""
+        chosen: dict = {}
+        for c in candidates:
+            domain, _, object_id = c.entity_id.partition(".")
+            identity = json.dumps(
+                {k: sorted(v) if isinstance(v, list) else v
+                 for k, v in c.details.items()},
+                sort_keys=True, default=str,
+            )
+            key = (object_id, c.action, c.miner_type.value, identity)
+            prev = chosen.get(key)
+            if prev is None or (
+                domain == "light" and prev.entity_id.startswith("switch.")
+            ):
+                chosen[key] = c
+        return list(chosen.values())
+
     def _expand_exclusions(self, automated: set[str]) -> set[str]:
         """Grow the automated-entity set with group members and the
         switch_as_x light/switch mirror of each entity — an automation
@@ -223,6 +245,7 @@ class SmartSuggestionsAddon:
             except Exception:
                 _LOGGER.exception("miner failed — continuing")
 
+        candidates = self._dedup_mirrors(candidates)
         ingested = 0
         for c in candidates:
             if c.action not in KNOWN_ACTIONS:
@@ -336,7 +359,7 @@ class SmartSuggestionsAddon:
     async def run(self) -> None:
         _LOGGER.info("Smart Suggestions v4 starting")
         await self._ledger.init()
-        wiped = await self._ledger.ensure_data_version(3)
+        wiped = await self._ledger.ensure_data_version(4)
         if wiped:
             _LOGGER.info(
                 "Ledger data-version reset: wiped %d rows mined before "

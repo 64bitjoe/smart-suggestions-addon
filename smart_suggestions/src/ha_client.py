@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -29,6 +30,22 @@ def _collect_entity_ids(node) -> set[str]:
     elif isinstance(node, list):
         for item in node:
             out |= _collect_entity_ids(item)
+    return out
+
+
+def _collect_device_ids(node) -> set[str]:
+    """Deep-walk a config structure collecting device_id values (device
+    actions reference devices, not entities — resolved separately)."""
+    out: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "device_id" and isinstance(value, str) and value:
+                out.add(value)
+            else:
+                out |= _collect_device_ids(value)
+    elif isinstance(node, list):
+        for item in node:
+            out |= _collect_device_ids(item)
     return out
 _DEFAULT_BASE = "http://supervisor/core/api"
 
@@ -219,6 +236,7 @@ class HAClient:
             if s.get("entity_id", "").startswith("automation.")
         ]
 
+        device_ids: set[str] = set()
         for auto_id in automation_ids:
             if not auto_id:
                 continue
@@ -233,6 +251,24 @@ class HAClient:
             except Exception:
                 continue
             out |= _collect_entity_ids(config)
+            device_ids |= _collect_device_ids(config)
+
+        # Device actions reference devices; resolve to that device's entities
+        # via the template API (registry lookups aren't REST-exposed).
+        for device_id in device_ids:
+            try:
+                async with self._session.post(
+                    f"{self._base}/template",
+                    json={"template": "{{ device_entities('%s') | to_json }}" % device_id},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    entities = json.loads(await resp.text())
+                    if isinstance(entities, list):
+                        out.update(e for e in entities if isinstance(e, str))
+            except Exception:
+                continue
 
         return out
 
