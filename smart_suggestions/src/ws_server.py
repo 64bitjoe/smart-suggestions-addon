@@ -14,67 +14,115 @@ _UI_HTML = """<!DOCTYPE html>
 <style>
   :root { color-scheme: dark; }
   body { margin:0; font-family:-apple-system,system-ui,sans-serif;
-         background:#111418; color:#e8eaed; padding:16px; }
-  h1 { font-size:1.2em; } h2 { font-size:0.8em; text-transform:uppercase;
-       letter-spacing:.08em; color:#9aa0a6; margin:20px 0 6px; }
-  .item { display:flex; align-items:center; gap:10px; background:#1b1f24;
-          border-radius:10px; padding:10px 12px; margin-bottom:6px; }
-  .t { flex:1; min-width:0; } .title { font-weight:600; }
-  .desc, .meta { font-size:.82em; color:#9aa0a6; }
+         background:#111418; color:#e8eaed; padding:16px; max-width:900px; margin:auto; }
+  h1 { font-size:1.25em; margin:4px 0 2px; }
+  .sub { color:#9aa0a6; font-size:.8em; margin-bottom:12px; }
+  .stats { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .stat { background:#1b1f24; border-radius:12px; padding:10px 14px; min-width:74px; }
+  .stat b { display:block; font-size:1.3em; }
+  .stat span { font-size:.72em; color:#9aa0a6; text-transform:uppercase; letter-spacing:.05em; }
+  h2 { font-size:.78em; text-transform:uppercase; letter-spacing:.08em;
+       color:#9aa0a6; margin:20px 0 6px; }
+  h2.now { color:#2f6fed; } h2.noticed { color:#e6a23c; } h2.auto { color:#9b6bff; }
+  .filters { display:flex; gap:6px; margin:6px 0 10px; }
+  .fchip { border:0; border-radius:10px; padding:5px 11px; cursor:pointer;
+           font-size:.78em; background:#1b1f24; color:#9aa0a6; }
+  .fchip.on { background:#2f6fed; color:#fff; }
+  .item { display:flex; align-items:flex-start; gap:10px; background:#1b1f24;
+          border-radius:12px; padding:10px 12px; margin-bottom:6px; }
+  .t { flex:1; min-width:0; } .title { font-weight:600; line-height:1.3; }
+  .desc, .meta { font-size:.8em; color:#9aa0a6; margin-top:2px; }
+  .bar { height:3px; border-radius:2px; margin-top:6px; background:#2b3138; overflow:hidden; }
+  .bar span { display:block; height:100%; background:#2f6fed; border-radius:2px; }
+  .btns { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
   button { border:0; border-radius:9px; padding:7px 11px; cursor:pointer;
-           font:inherit; font-size:.8em; background:#2b3138; color:#e8eaed; }
+           font:inherit; font-size:.78em; background:#2b3138; color:#e8eaed; }
   button.pri { background:#2f6fed; color:#fff; }
-  .empty { color:#9aa0a6; font-size:.9em; padding:6px 0 14px; }
-  #logs { background:#0b0d10; border-radius:10px; padding:10px; font:11px/1.5 monospace;
-          height:180px; overflow-y:auto; white-space:pre-wrap; }
+  button.promote { background:#7c4dff; color:#fff; }
+  button.undo { background:#e6a23c; color:#fff; }
+  .undone { opacity:.5; }
+  .empty { color:#9aa0a6; font-size:.85em; padding:4px 0 10px; }
+  #logs { background:#0b0d10; border-radius:12px; padding:10px; font:11px/1.5 monospace;
+          height:170px; overflow-y:auto; white-space:pre-wrap; }
   code { background:#1b1f24; padding:2px 5px; border-radius:5px; }
 </style></head><body>
 <h1>Smart Suggestions</h1>
-<div class="desc">Add the dashboard card: copy <code>smart-suggestions-card.js</code> is auto-installed to
-<code>/config/www/</code>. Register <code>/local/smart-suggestions-card.js</code> as a JavaScript-Module
-dashboard resource once, then add <code>custom:smart-suggestions-card</code> to a dashboard.</div>
+<div class="sub" id="sub"></div>
+<div class="stats" id="stats"></div>
 <div id="zones"></div>
 <h2>Logs</h2><div id="logs"></div>
 <script>
-const ZONES = [["now","Right now"],["noticed","Noticed"],
-               ["discoveries","Discovered patterns"],["emerging","Emerging (still learning)"]];
-let zones = {};
-const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-function act(action, signature) {
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ZONES = [["now","Right now","now"],["activity","Auto-pilot activity","auto"],
+  ["autopilot","Auto-pilot patterns","auto"],["noticed","Noticed","noticed"],
+  ["discoveries","Discovered patterns",""],["emerging","Emerging (still learning)",""]];
+let zones = {}, stats = {}, filter = "all";
+function act(payload) {
   fetch("action", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({action, signature})});
+    body: JSON.stringify(payload)});
+}
+function timeAgo(ts) {
+  const m = Math.max(0, Math.round(Date.now()/1000/60 - ts/60));
+  return m < 1 ? "just now" : m < 60 ? m + "m ago" : Math.round(m/60) + "h ago";
+}
+function sugRow(s, key) {
+  const pct = Math.round((s.confidence||0)*100);
+  return `<div class="item"><div class="t">
+    <div class="title">${esc(s.title)}${s.lifecycle==="autopilot"?" ⚡":""}</div>
+    <div class="desc">${esc(s.description)}</div>
+    <div class="meta">${esc(s.miner_type)} · ${pct}% · seen ${s.occurrences}×${s.accepted_runs?` · run ${s.accepted_runs}×`:""}</div>
+    <div class="bar"><span style="width:${pct}%"></span></div>
+  </div><div class="btns">
+    ${s.can_promote?`<button class="promote" onclick='act({action:"promote",signature:"${esc(s.signature)}"})'>⚡ Auto</button>`:""}
+    ${key==="autopilot"?`<button onclick='act({action:"demote",signature:"${esc(s.signature)}"})'>Demote</button>`:""}
+    ${key==="now"||key==="noticed"?`<button class="pri" onclick='act({action:"run",signature:"${esc(s.signature)}"})'>Run</button>`:""}
+    ${s.can_automate&&key!=="emerging"?`<button class="pri" onclick='act({action:"accept",signature:"${esc(s.signature)}"})'>Automate</button>`:""}
+    ${key==="noticed"?`<button onclick='act({action:"snooze",signature:"${esc(s.signature)}"})'>Snooze</button>`:""}
+    ${key!=="emerging"?`<button onclick='act({action:"dismiss",signature:"${esc(s.signature)}"})'>✕</button>`:""}
+  </div></div>`;
+}
+function actRow(a) {
+  const verb = a.act_action.includes("off") ? "Turned off" : "Turned on";
+  return `<div class="item ${a.undone?"undone":""}"><div class="t">
+    <div class="title">🤖 ${verb} ${esc(a.title)}</div>
+    <div class="meta">${timeAgo(a.ts)}${a.undone?" · undone":""}</div></div>
+    ${a.undone?"":`<div class="btns"><button class="undo" onclick='act({action:"undo",activity_id:${Number(a.activity_id)}})'>Undo</button></div>`}
+  </div>`;
 }
 function render() {
-  const root = document.getElementById("zones");
-  root.innerHTML = ZONES.map(([key, label]) => {
-    const items = zones[key] || [];
-    const body = items.length ? items.map(s => `
-      <div class="item"><div class="t">
-        <div class="title">${esc(s.title)}</div><div class="desc">${esc(s.description)}</div>
-        <div class="meta">${esc(s.miner_type)} · ${(s.confidence*100).toFixed(0)}% · seen ${s.occurrences}×</div>
-      </div><div>
-        ${key==="now"||key==="noticed" ? `<button class="pri" onclick="act('run','${s.signature}')">Run</button>` : ""}
-        ${s.can_automate && key!=="emerging" ? `<button class="pri" onclick="act('accept','${s.signature}')">Automate</button>` : ""}
-        ${key==="noticed" ? `<button onclick="act('snooze','${s.signature}')">Snooze</button>` : ""}
-        ${key!=="emerging" ? `<button onclick="act('dismiss','${s.signature}')">✕</button>` : ""}
-      </div></div>`).join("")
+  const s = stats.counts || {};
+  document.getElementById("sub").textContent =
+    `v${stats.version || "?"} · last mining: ${stats.last_mining || "…"}`;
+  document.getElementById("stats").innerHTML =
+    [["emerging","Emerging"],["confirmed","Confirmed"],["autopilot","Auto-pilot"],
+     ["automated","Automated"],["dismissed","Dismissed"]]
+    .map(([k,l]) => `<div class="stat"><b>${s[k]||0}</b><span>${l}</span></div>`).join("");
+  document.getElementById("zones").innerHTML = ZONES.map(([key,label,cls]) => {
+    let items = zones[key] || [];
+    const isFilterable = key === "discoveries" || key === "emerging";
+    if (isFilterable && filter !== "all")
+      items = items.filter((s) => s.miner_type === filter);
+    const chips = isFilterable && key === "discoveries" ?
+      `<div class="filters">${["all","temporal","sequence","cross_area"].map((f) =>
+        `<button class="fchip ${filter===f?"on":""}" onclick="setFilter('${f}')">${f}</button>`).join("")}</div>` : "";
+    const body = items.length
+      ? items.map((x) => key === "activity" ? actRow(x) : sugRow(x, key)).join("")
       : `<div class="empty">Nothing here yet.</div>`;
-    return `<h2>${label}</h2>${body}`;
+    return `<h2 class="${cls}">${label}</h2>${chips}${body}`;
   }).join("");
 }
+function setFilter(f) { filter = f; render(); }
 function addLog(line) {
   const el = document.getElementById("logs");
-  el.textContent += line + "\\n";
-  el.scrollTop = el.scrollHeight;
+  el.textContent += line + "\\n"; el.scrollTop = el.scrollHeight;
 }
-fetch("zones").then(r => r.json()).then(z => { zones = z; render(); });
+fetch("zones").then(r => r.json()).then((d) => { zones = d.zones||{}; stats = d.stats||{}; render(); });
 const proto = location.protocol === "https:" ? "wss" : "ws";
 const ws = new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\\/$/,"")}/ws`);
 ws.onmessage = (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg.type === "zones") { zones = msg.zones; render(); }
+  if (msg.type === "zones") { zones = msg.zones||{}; stats = msg.stats||{}; render(); }
   if (msg.type === "log") addLog(`[${msg.level}] ${msg.message}`);
 };
 </script></body></html>"""
@@ -84,6 +132,7 @@ class WSServer:
     def __init__(self, port: int = 8099):
         self._port = port
         self._zones: dict = {"now": [], "noticed": [], "discoveries": [], "emerging": []}
+        self._stats: dict = {}
         self._action_handler = None
         self._clients: set[web.WebSocketResponse] = set()
         self._runner: web.AppRunner | None = None
@@ -93,6 +142,9 @@ class WSServer:
 
     def set_zones(self, zones: dict) -> None:
         self._zones = zones
+
+    def set_stats(self, stats: dict) -> None:
+        self._stats = stats
 
     async def start(self) -> None:
         app = web.Application()
@@ -116,7 +168,7 @@ class WSServer:
         return web.Response(text=_UI_HTML, content_type="text/html")
 
     async def _zones_handler(self, request: web.Request) -> web.Response:
-        return web.json_response(self._zones)
+        return web.json_response({"zones": self._zones, "stats": self._stats})
 
     async def _action(self, request: web.Request) -> web.Response:
         data = await request.json()
@@ -129,7 +181,7 @@ class WSServer:
         await ws.prepare(request)
         self._clients.add(ws)
         try:
-            await ws.send_json({"type": "zones", "zones": self._zones})
+            await ws.send_json({"type": "zones", "zones": self._zones, "stats": self._stats})
             async for msg in ws:
                 if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     break
@@ -148,7 +200,7 @@ class WSServer:
             self._clients.discard(ws)
 
     async def broadcast_zones(self) -> None:
-        await self._send_all({"type": "zones", "zones": self._zones})
+        await self._send_all({"type": "zones", "zones": self._zones, "stats": self._stats})
 
     async def broadcast_log(self, level: str, message: str) -> None:
         await self._send_all({"type": "log", "level": level, "message": message})
