@@ -49,3 +49,4 @@ def test_can_promote_truth_table():
     assert not can_promote({**base, "lifecycle": "emerging"}, "light.porch")
     assert not can_promote({**base, "lifecycle": "autopilot"}, "light.porch")
     assert not can_promote(base, "lock.front_door")  # never locks
+    assert not can_promote({**base, "miner_type": "waste"}, "switch.heater")

@@ -62,4 +62,5 @@ def can_promote(row: dict, act_entity: str) -> bool:
         and row.get("accepted_runs", 0) >= PROMOTE_MIN_RUNS
         and row.get("dismiss_count", 0) == 0
         and act_entity.split(".", 1)[0] not in NEVER_AUTOPILOT_DOMAINS
+        and row.get("miner_type") != "waste"
     )

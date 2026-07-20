@@ -273,20 +273,24 @@ class PatternLedger:
             return cur.rowcount > 0
 
     async def set_lifecycle(
-        self, sig: str, lifecycle: str, reset_runs: bool = False
-    ) -> None:
+        self, sig: str, lifecycle: str, reset_runs: bool = False,
+        expected: str | None = None,
+    ) -> bool:
+        """Returns True if a row transitioned. `expected` guards the update
+        (WHERE lifecycle = expected) so e.g. an undo can't demote a pattern
+        the user already converted to a real HA automation."""
         async with aiosqlite.connect(self.db_path) as db:
             if reset_runs:
-                await db.execute(
-                    "UPDATE patterns SET lifecycle=?, accepted_runs=0 WHERE signature=?",
-                    (lifecycle, sig),
-                )
+                sql = "UPDATE patterns SET lifecycle=?, accepted_runs=0 WHERE signature=?"
             else:
-                await db.execute(
-                    "UPDATE patterns SET lifecycle=? WHERE signature=?",
-                    (lifecycle, sig),
-                )
+                sql = "UPDATE patterns SET lifecycle=? WHERE signature=?"
+            params: list = [lifecycle, sig]
+            if expected is not None:
+                sql += " AND lifecycle=?"
+                params.append(expected)
+            cur = await db.execute(sql, params)
             await db.commit()
+            return cur.rowcount > 0
 
     async def add_activity(
         self, ts: float, signature: str, act_entity: str, act_action: str

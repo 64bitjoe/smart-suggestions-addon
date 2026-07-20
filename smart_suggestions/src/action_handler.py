@@ -71,16 +71,31 @@ class ActionHandler:
         elif action == "promote":
             act_entity, _ = self._resolve_act(row)
             if can_promote(row, act_entity):
-                await self._ledger.set_lifecycle(sig, LIFECYCLE_AUTOPILOT)
-                _LOGGER.info("promoted to autopilot: %s", sig)
+                ok = await self._ledger.set_lifecycle(
+                    sig, LIFECYCLE_AUTOPILOT, expected=LIFECYCLE_CONFIRMED
+                )
+                if ok:
+                    _LOGGER.info("promoted to autopilot: %s", sig)
+                else:
+                    _LOGGER.warning(
+                        "promote guard blocked transition (lifecycle changed "
+                        "underneath us): %s", sig,
+                    )
             else:
                 _LOGGER.warning("promote rejected (not eligible): %s", sig)
                 return
         elif action == "demote":
-            await self._ledger.set_lifecycle(
-                sig, LIFECYCLE_CONFIRMED, reset_runs=True
+            ok = await self._ledger.set_lifecycle(
+                sig, LIFECYCLE_CONFIRMED, reset_runs=True,
+                expected=LIFECYCLE_AUTOPILOT,
             )
-            _LOGGER.info("demoted to suggest-only: %s", sig)
+            if ok:
+                _LOGGER.info("demoted to suggest-only: %s", sig)
+            else:
+                _LOGGER.warning(
+                    "demote guard blocked transition (lifecycle changed "
+                    "underneath us): %s", sig,
+                )
         else:
             _LOGGER.warning("unknown action: %s", action)
             return
@@ -101,11 +116,19 @@ class ActionHandler:
             )
         await self._ledger.mark_activity_undone(activity_id)
         # Veto: back to suggest-only, trust re-earned from zero.
-        await self._ledger.set_lifecycle(
-            entry["signature"], LIFECYCLE_CONFIRMED, reset_runs=True
+        ok = await self._ledger.set_lifecycle(
+            entry["signature"], LIFECYCLE_CONFIRMED, reset_runs=True,
+            expected=LIFECYCLE_AUTOPILOT,
         )
-        _LOGGER.info("undo: reversed activity %d, demoted %s",
-                     activity_id, entry["signature"])
+        if ok:
+            _LOGGER.info("undo: reversed activity %d, demoted %s",
+                         activity_id, entry["signature"])
+        else:
+            _LOGGER.warning(
+                "undo: reversed activity %d but demote guard blocked "
+                "(pattern no longer autopilot): %s",
+                activity_id, entry["signature"],
+            )
 
     async def execute_autorun(self, row: dict, now) -> bool:
         """Execute a matched autopilot pattern. Returns True when executed."""

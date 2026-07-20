@@ -1,6 +1,7 @@
 # smart_suggestions/src/publisher.py
 """Ledger rows → HA sensor payloads. build_payload() is the card contract."""
 from __future__ import annotations
+import json
 import logging
 
 from lifecycle import can_promote
@@ -26,8 +27,15 @@ def build_payload(row: dict, zone: str) -> dict:
     if not title:
         title, tdesc = template_description(row)
         description = description or tdesc
-    act_entity = row.get("act_entity", row["entity_id"])
-    act_action = row.get("act_action", row["action"])
+    act_entity = row.get("act_entity")
+    act_action = row.get("act_action")
+    if act_entity is None:
+        if row["miner_type"] == "sequence":
+            d = json.loads(row["details_json"])
+            act_entity = d.get("target_entity", row["entity_id"])
+            act_action = d.get("target_action", row["action"])
+        else:
+            act_entity, act_action = row["entity_id"], row["action"]
     if row["miner_type"] == "waste":
         act_action = "turn_off"
     return {

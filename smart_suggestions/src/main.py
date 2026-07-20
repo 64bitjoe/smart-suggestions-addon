@@ -328,7 +328,7 @@ class SmartSuggestionsAddon:
             since_ts=(now - timedelta(hours=24)).timestamp()
         )
         zones = await self._publisher.publish(
-            self._now_items, discovery_rows, waste_rows, activity
+            self._now_items, discovery_rows + autopilot_rows, waste_rows, activity
         )
         zones["autopilot"] = [build_payload(r, "autopilot") for r in autopilot_rows]
         emerging = await self._ledger.get_rows(("emerging",))
@@ -362,6 +362,8 @@ class SmartSuggestionsAddon:
                 continue
             if await self._action_handler.execute_autorun(row, now):
                 executed_any = True
+            else:
+                to_suggest.append(row)
 
         changed = [r["signature"] for r in to_suggest] != [
             r["signature"] for r in self._now_items
