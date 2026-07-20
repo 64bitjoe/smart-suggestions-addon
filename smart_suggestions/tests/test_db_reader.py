@@ -99,6 +99,35 @@ async def test_get_all_state_changes_filters_by_domains(fake_db):
     assert len(await reader.get_all_state_changes(since)) == 60
 
 
+async def test_get_all_state_changes_extra_like_patterns(fake_db):
+    # Motion binary sensors matter (cross-area triggers); door/connectivity
+    # binary sensors are dead weight and must not be fetched.
+    async with aiosqlite.connect(fake_db) as db:
+        await db.execute(
+            "INSERT INTO states_meta (metadata_id, entity_id) VALUES (4, 'binary_sensor.hall_motion')"
+        )
+        await db.execute(
+            "INSERT INTO states_meta (metadata_id, entity_id) VALUES (5, 'binary_sensor.front_door_contact')"
+        )
+        base = datetime(2026, 5, 2, tzinfo=timezone.utc).timestamp()
+        for meta_id in (4, 5):
+            await db.execute(
+                "INSERT INTO states (metadata_id, state, last_updated_ts) VALUES (?, 'on', ?)",
+                (meta_id, base),
+            )
+        await db.commit()
+
+    reader = DbReader(sqlite_path=fake_db)
+    since = datetime(2026, 4, 25, tzinfo=timezone.utc)
+    changes = await reader.get_all_state_changes(
+        since, domains=["light"], extra_like=["binary_sensor.%motion%"]
+    )
+    ids = {c.entity_id for c in changes}
+    assert "binary_sensor.hall_motion" in ids
+    assert "binary_sensor.front_door_contact" not in ids
+    assert any(i.startswith("light.") for i in ids)
+
+
 def test_db_reader_accepts_db_url():
     reader = DbReader(db_url="sqlite+aiosqlite:///tmp/test.db")
     assert reader.db_url == "sqlite+aiosqlite:///tmp/test.db"

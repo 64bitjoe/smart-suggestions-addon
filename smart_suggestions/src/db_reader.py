@@ -103,15 +103,28 @@ class DbReader:
         since: datetime,
         entity_id_prefix: str | None = None,
         domains: list[str] | None = None,
+        extra_like: list[str] | None = None,
     ) -> list[StateChange]:
         """Fetch state changes since `since`.
 
         domains: restrict to entities in these domains (e.g. ["light", "person"]).
+        extra_like: additional raw LIKE patterns OR-ed into the domain filter
+        (e.g. "binary_sensor.%motion%" — patterns are used as-is, not escaped).
         Filtering happens in SQL — on a busy recorder the irrelevant sensor
         firehose is the overwhelming majority of rows, and materializing it
         in Python costs gigabytes.
         """
         since_ts = since.timestamp()
+
+        def _domain_patterns() -> list[str]:
+            patterns = []
+            for d in domains or []:
+                escaped_d = (
+                    d.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
+                patterns.append(f"{escaped_d}.%")
+            patterns.extend(extra_like or [])
+            return patterns
 
         if self.sqlite_path:
             sql = """
@@ -130,16 +143,13 @@ class DbReader:
                     .replace("_", "\\_")
                 )
                 params.append(f"{escaped}%")
-            if domains:
+            patterns = _domain_patterns()
+            if patterns:
                 like_clauses = " OR ".join(
-                    "m.entity_id LIKE ? ESCAPE '\\'" for _ in domains
+                    "m.entity_id LIKE ? ESCAPE '\\'" for _ in patterns
                 )
                 sql += f" AND ({like_clauses})"
-                for d in domains:
-                    escaped_d = (
-                        d.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    )
-                    params.append(f"{escaped_d}.%")
+                params.extend(patterns)
             sql += " ORDER BY s.last_updated_ts ASC"
 
             async with aiosqlite.connect(self.sqlite_path) as db:
@@ -172,16 +182,14 @@ class DbReader:
                 .replace("_", "\\_")
             )
             named_params["prefix"] = f"{escaped}%"
-        if domains:
+        patterns = _domain_patterns()
+        if patterns:
             like_clauses = " OR ".join(
-                f"m.entity_id LIKE :domain_{i} ESCAPE '\\'" for i in range(len(domains))
+                f"m.entity_id LIKE :domain_{i} ESCAPE '\\'" for i in range(len(patterns))
             )
             sql += f" AND ({like_clauses})"
-            for i, d in enumerate(domains):
-                escaped_d = (
-                    d.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                )
-                named_params[f"domain_{i}"] = f"{escaped_d}.%"
+            for i, p in enumerate(patterns):
+                named_params[f"domain_{i}"] = p
         sql += " ORDER BY s.last_updated_ts ASC"
 
         rows = await self._query_via_sqlalchemy(sql, named_params)
