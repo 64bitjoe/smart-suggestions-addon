@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import anthropic as _anthropic
 
 from action_handler import ActionHandler
+from autopilot import partition_matches, within_throttle
 from candidate import MinerType
 from context_matcher import ContextMatcher
 from db_reader import DbReader, StateChange
@@ -133,6 +134,7 @@ class SmartSuggestionsAddon:
         self._now_items: list[dict] = []
         self._tz: ZoneInfo | None = None
         self._waste_baselines: dict | None = None
+        self._last_mining_summary: str = "not yet run"
 
     async def _noop_states_ready(self, states: dict) -> None:
         return
@@ -267,6 +269,10 @@ class SmartSuggestionsAddon:
             "mining: %d candidates, %d ingested, %d newly confirmed",
             len(candidates), ingested, len(newly),
         )
+        self._last_mining_summary = (
+            f"{len(candidates)} candidates, {ingested} ingested, "
+            f"{len(newly)} newly confirmed"
+        )
         await self._describe_pending()
         await self.refresh_publish()
 
@@ -305,37 +311,64 @@ class SmartSuggestionsAddon:
 
     async def refresh_publish(self) -> None:
         now = datetime.now(timezone.utc)
-        confirmed = await self._ledger.get_rows(("confirmed",))
-        waste_rows, discovery_rows = [], []
+        rows = await self._ledger.get_rows(("confirmed", "autopilot"))
+        waste_rows, discovery_rows, autopilot_rows = [], [], []
         stale_cutoff = now.timestamp() - 2 * self._waste_interval
-        for r in confirmed:
+        for r in rows:
             if r["miner_type"] == "waste":
                 snoozed = r["snoozed_until"] and r["snoozed_until"] > now.timestamp()
                 if r["last_seen"] >= stale_cutoff and not snoozed:
                     waste_rows.append(r)
+            elif r["lifecycle"] == "autopilot":
+                autopilot_rows.append(r)
             else:
                 discovery_rows.append(r)
 
-        zones = await self._publisher.publish(
-            self._now_items, discovery_rows, waste_rows, []
+        activity = await self._ledger.recent_activity(
+            since_ts=(now - timedelta(hours=24)).timestamp()
         )
+        zones = await self._publisher.publish(
+            self._now_items, discovery_rows, waste_rows, activity
+        )
+        zones["autopilot"] = [build_payload(r, "autopilot") for r in autopilot_rows]
         emerging = await self._ledger.get_rows(("emerging",))
         zones["emerging"] = [build_payload(r, "emerging") for r in emerging]
         self._ws_server.set_zones(zones)
+        counts = await self._ledger.lifecycle_counts()
+        if hasattr(self._ws_server, "set_stats"):
+            self._ws_server.set_stats({
+                "counts": counts,
+                "last_mining": self._last_mining_summary,
+                "version": "4.1.0",
+            })
         await self._ws_server.broadcast_zones()
 
     async def match_once(self) -> None:
-        confirmed = await self._ledger.get_rows(("confirmed",))
-        rows = [r for r in confirmed if r["miner_type"] != "waste"]
+        rows = await self._ledger.get_rows(("confirmed", "autopilot"))
+        rows = [r for r in rows if r["miner_type"] != "waste"]
         now = datetime.now(timezone.utc).astimezone(await self._resolve_tz())
-        items = self._matcher.match(
-            rows, self._ha.get_states(), now
-        )
-        if [r["signature"] for r in items] != [r["signature"] for r in self._now_items]:
-            self._now_items = items
+        items = self._matcher.match(rows, self._ha.get_states(), now)
+        to_execute, to_suggest = partition_matches(items)
+
+        executed_any = False
+        for row in to_execute:
+            hour_ago = (now - timedelta(hours=1)).timestamp()
+            if not within_throttle(await self._ledger.autoruns_since(hour_ago)):
+                _LOGGER.warning(
+                    "autorun throttle hit — falling back to suggestion: %s",
+                    row["signature"],
+                )
+                to_suggest.append(row)
+                continue
+            if await self._action_handler.execute_autorun(row, now):
+                executed_any = True
+
+        changed = [r["signature"] for r in to_suggest] != [
+            r["signature"] for r in self._now_items
+        ]
+        self._now_items = to_suggest
+        if changed or executed_any:
             await self.refresh_publish()
-        else:
-            self._now_items = items
 
     # ── loops ───────────────────────────────────────────────────────
 
