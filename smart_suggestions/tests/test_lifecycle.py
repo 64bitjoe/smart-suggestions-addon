@@ -37,3 +37,15 @@ def test_should_resurface():
     assert should_resurface(0.75, 0.55, days_since_dismissal=1)   # prob rose ≥0.15
     assert not should_resurface(0.60, 0.55, days_since_dismissal=1)
     assert should_resurface(0.10, 0.55, days_since_dismissal=31)  # 30-day expiry
+
+
+def test_can_promote_truth_table():
+    from lifecycle import can_promote
+
+    base = {"lifecycle": "confirmed", "accepted_runs": 3, "dismiss_count": 0}
+    assert can_promote(base, "light.porch")
+    assert not can_promote({**base, "accepted_runs": 2}, "light.porch")
+    assert not can_promote({**base, "dismiss_count": 1}, "light.porch")
+    assert not can_promote({**base, "lifecycle": "emerging"}, "light.porch")
+    assert not can_promote({**base, "lifecycle": "autopilot"}, "light.porch")
+    assert not can_promote(base, "lock.front_door")  # never locks

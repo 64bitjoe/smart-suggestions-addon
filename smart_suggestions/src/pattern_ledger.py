@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS patterns (
 )
 """
 
+_ACTIVITY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    signature TEXT NOT NULL,
+    act_entity TEXT NOT NULL,
+    act_action TEXT NOT NULL,
+    undone INTEGER NOT NULL DEFAULT 0
+)
+"""
+
 DISMISSAL_BUMP_WINDOW = timedelta(days=7)
 
 
@@ -52,6 +63,7 @@ class PatternLedger:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(_SCHEMA)
+            await db.execute(_ACTIVITY_SCHEMA)
             await db.commit()
 
     async def upsert_evidence(
@@ -259,3 +271,72 @@ class PatternLedger:
             )
             await db.commit()
             return cur.rowcount > 0
+
+    async def set_lifecycle(
+        self, sig: str, lifecycle: str, reset_runs: bool = False
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            if reset_runs:
+                await db.execute(
+                    "UPDATE patterns SET lifecycle=?, accepted_runs=0 WHERE signature=?",
+                    (lifecycle, sig),
+                )
+            else:
+                await db.execute(
+                    "UPDATE patterns SET lifecycle=? WHERE signature=?",
+                    (lifecycle, sig),
+                )
+            await db.commit()
+
+    async def add_activity(
+        self, ts: float, signature: str, act_entity: str, act_action: str
+    ) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "INSERT INTO activity (ts, signature, act_entity, act_action) "
+                "VALUES (?, ?, ?, ?)",
+                (ts, signature, act_entity, act_action),
+            )
+            await db.commit()
+            return cur.lastrowid
+
+    async def recent_activity(self, since_ts: float, limit: int = 15) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT a.*, p.title FROM activity a "
+                "LEFT JOIN patterns p ON a.signature = p.signature "
+                "WHERE a.ts >= ? ORDER BY a.ts DESC LIMIT ?",
+                (since_ts, limit),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def get_activity(self, activity_id: int) -> dict | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT * FROM activity WHERE id=?", (activity_id,)
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def mark_activity_undone(self, activity_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE activity SET undone=1 WHERE id=?", (activity_id,)
+            )
+            await db.commit()
+
+    async def autoruns_since(self, since_ts: float) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM activity WHERE ts >= ?", (since_ts,)
+            )
+            return (await cur.fetchone())[0]
+
+    async def lifecycle_counts(self) -> dict[str, int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT lifecycle, COUNT(*) FROM patterns GROUP BY lifecycle"
+            )
+            return {row[0]: row[1] for row in await cur.fetchall()}

@@ -116,3 +116,37 @@ async def test_mark_automated_is_idempotent(ledger):
     assert await ledger.mark_automated(sig, "auto_123") is True
     assert await ledger.mark_automated(sig, "auto_456") is False
     assert (await ledger.get(sig))["automation_id"] == "auto_123"
+
+
+async def test_set_lifecycle_and_reset_runs(ledger):
+    await ledger.upsert_evidence(_cand())
+    sig = _cand().signature()
+    await ledger.record_run(sig)
+    await ledger.record_run(sig)
+    await ledger.set_lifecycle(sig, "autopilot")
+    assert (await ledger.get(sig))["lifecycle"] == "autopilot"
+    await ledger.set_lifecycle(sig, "confirmed", reset_runs=True)
+    row = await ledger.get(sig)
+    assert row["lifecycle"] == "confirmed"
+    assert row["accepted_runs"] == 0
+
+
+async def test_activity_log_roundtrip(ledger):
+    await ledger.upsert_evidence(_cand())
+    sig = _cand().signature()
+    await ledger.save_description(sig, "Porch at 8", "d", "", "template")
+    aid = await ledger.add_activity(1000.0, sig, "light.porch", "turn_on")
+    assert isinstance(aid, int)
+    rows = await ledger.recent_activity(since_ts=0.0)
+    assert rows[0]["act_entity"] == "light.porch"
+    assert rows[0]["title"] == "Porch at 8"      # joined from patterns
+    assert rows[0]["undone"] == 0
+    assert await ledger.autoruns_since(0.0) == 1
+    await ledger.mark_activity_undone(aid)
+    assert (await ledger.get_activity(aid))["undone"] == 1
+
+
+async def test_lifecycle_counts(ledger):
+    await ledger.upsert_evidence(_cand())
+    counts = await ledger.lifecycle_counts()
+    assert counts.get("emerging") == 1

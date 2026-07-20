@@ -47,3 +47,19 @@ def should_resurface(
     if days_since_dismissal >= RESURFACE_AFTER_DAYS:
         return True
     return prob >= (prob_at_dismissal or 0.0) + RESURFACE_PROB_DELTA
+
+
+LIFECYCLE_AUTOPILOT = "autopilot"
+PROMOTE_MIN_RUNS = 3
+NEVER_AUTOPILOT_DOMAINS = {"lock"}
+
+
+def can_promote(row: dict, act_entity: str) -> bool:
+    """Eligible for the auto-run promote chip. Promotion itself is always an
+    explicit user action — this only gates the offer."""
+    return (
+        row.get("lifecycle") == LIFECYCLE_CONFIRMED
+        and row.get("accepted_runs", 0) >= PROMOTE_MIN_RUNS
+        and row.get("dismiss_count", 0) == 0
+        and act_entity.split(".", 1)[0] not in NEVER_AUTOPILOT_DOMAINS
+    )
