@@ -15,6 +15,15 @@ _SERVICE = {"turn_on": "turn_on", "set_state_on": "turn_on",
             "turn_off": "turn_off", "set_state_off": "turn_off",
             "currently_on": "turn_off"}
 
+_REVERSE = {"turn_on": "turn_off", "turn_off": "turn_on",
+            "set_state_on": "turn_off", "set_state_off": "turn_on",
+            "currently_on": "turn_on"}
+
+
+def reverse_service(act_action: str) -> str | None:
+    """Service that undoes an auto-run action; None if not reversible."""
+    return _REVERSE.get(act_action)
+
 
 class ActionHandler:
     def __init__(self, ledger, ha_client, matcher, refresh_cb):
