@@ -72,7 +72,9 @@ class ContextMatcher:
         if mt == "temporal":
             minute_now = now.hour * 60 + now.minute
             minute_pat = d["hour"] * 60 + d["minute"]
-            if abs(minute_now - minute_pat) > TEMPORAL_WINDOW_MINUTES:
+            diff = abs(minute_now - minute_pat)
+            diff = min(diff, 1440 - diff)  # circular: 23:55 matches 00:10
+            if diff > TEMPORAL_WINDOW_MINUTES:
                 return None
             if now.weekday() not in d.get("weekdays", []):
                 return None

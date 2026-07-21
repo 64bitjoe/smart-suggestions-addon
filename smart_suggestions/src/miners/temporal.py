@@ -77,6 +77,10 @@ class TemporalMiner:
     ) -> tuple[int, int, set[int]] | None:
         """Returns the maximum-count cluster within a 2*CLUSTER_WIDTH_MINUTES span. Ties broken by leftmost position.
 
+        Handles the midnight wrap by extending the sorted minute axis with
+        +1440 copies and sliding across the extension; the window size is
+        capped at the original point count so no event is counted twice.
+
         Returns (count, center, weekdays_set) or None."""
         if len(timestamps) < self.min_occurrences:
             return None
@@ -87,18 +91,23 @@ class TemporalMiner:
         best_weekdays: set[int] = set()
         width = CLUSTER_WIDTH_MINUTES
 
-        # Sliding window across minute-of-day axis. Wrap at midnight handled by also
-        # sliding over [m + 1440 for m in minutes] union; for v1 we skip wrap to keep it simple.
         n = len(minutes_of_day)
+        extended = minutes_of_day + [(m + 1440, wd) for m, wd in minutes_of_day]
         left = 0
-        for right in range(n):
-            while minutes_of_day[right][0] - minutes_of_day[left][0] > 2 * width:
+        for right in range(len(extended)):
+            while extended[right][0] - extended[left][0] > 2 * width:
+                left += 1
+            # Cap at n so a window spanning both copies of the same event
+            # can't double-count.
+            while right - left + 1 > n:
                 left += 1
             count = right - left + 1
             if count > best_count:
                 best_count = count
-                best_center = (minutes_of_day[left][0] + minutes_of_day[right][0]) // 2
-                best_weekdays = {wd for _, wd in minutes_of_day[left : right + 1]}
+                best_center = (
+                    (extended[left][0] + extended[right][0]) // 2
+                ) % 1440
+                best_weekdays = {wd for _, wd in extended[left : right + 1]}
 
         if best_count < self.min_occurrences:
             return None

@@ -53,3 +53,25 @@ async def test_separates_by_state():
 
     actions = sorted(c.action for c in candidates)
     assert actions == ["turn_off", "turn_on"]
+
+
+async def test_cluster_wraps_midnight():
+    """5 events at 23:55 + 5 at 00:05 are one routine centered ~midnight."""
+    from datetime import datetime, timedelta, timezone
+    from db_reader import StateChange
+    from miners.temporal import TemporalMiner
+
+    changes = []
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    for day in range(5):
+        changes.append(StateChange("light.hall", "on",
+                                   base + timedelta(days=day, hours=23, minutes=55)))
+        changes.append(StateChange("light.hall", "on",
+                                   base + timedelta(days=day + 1, minutes=5)))
+    out = await TemporalMiner().run(changes, now=base + timedelta(days=10))
+    assert len(out) == 1
+    c = out[0]
+    assert c.occurrences == 10
+    center = c.details["hour"] * 60 + c.details["minute"]
+    # Center within ±10 min of midnight, on either side of the wrap
+    assert center >= 1430 or center <= 10

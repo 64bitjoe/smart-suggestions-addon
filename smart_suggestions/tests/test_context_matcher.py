@@ -74,3 +74,14 @@ def test_max_now_caps_and_ranks():
     out = ContextMatcher(max_now=5).match(rows, states, NOW)
     assert len(out) == 5
     assert out[0]["conditional_prob"] >= out[-1]["conditional_prob"]
+
+
+def test_temporal_matches_across_midnight():
+    # Pattern learned at 23:55; it's now 00:10 next day — circular distance
+    # is 15 min, inside the ±30 window. (00:10 Sat; weekday 5 must be listed.)
+    m = ContextMatcher()
+    row = _temporal_row(hour=23, weekdays=(4, 5))
+    row["details_json"] = json.dumps({"hour": 23, "minute": 55, "weekdays": [4, 5]})
+    at = datetime(2026, 7, 18, 0, 10, tzinfo=timezone.utc)  # Sat 00:10
+    out = m.match([row], {"light.porch": _state("off")}, at)
+    assert len(out) == 1
