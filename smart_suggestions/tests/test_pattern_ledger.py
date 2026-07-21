@@ -150,3 +150,25 @@ async def test_lifecycle_counts(ledger):
     await ledger.upsert_evidence(_cand())
     counts = await ledger.lifecycle_counts()
     assert counts.get("emerging") == 1
+
+
+async def test_activity_success_flag(ledger):
+    await ledger.upsert_evidence(_cand())
+    sig = _cand().signature()
+    aid_ok = await ledger.add_activity(1000.0, sig, "light.porch", "turn_on")
+    aid_fail = await ledger.add_activity(
+        1001.0, sig, "light.porch", "turn_on", success=False
+    )
+    assert (await ledger.get_activity(aid_ok))["success"] == 1
+    assert (await ledger.get_activity(aid_fail))["success"] == 0
+
+
+async def test_set_lifecycle_expected_guard(ledger):
+    await ledger.upsert_evidence(_cand())
+    sig = _cand().signature()
+    await ledger.set_lifecycle(sig, "automated")
+    # Guarded demote from a wrong current state must not transition
+    assert await ledger.set_lifecycle(
+        sig, "confirmed", reset_runs=True, expected="autopilot"
+    ) is False
+    assert (await ledger.get(sig))["lifecycle"] == "automated"

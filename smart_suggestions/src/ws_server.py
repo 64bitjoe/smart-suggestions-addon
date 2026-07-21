@@ -86,7 +86,7 @@ function actRow(a) {
   const verb = a.act_action.includes("off") ? "Turned off" : "Turned on";
   return `<div class="item ${a.undone?"undone":""}"><div class="t">
     <div class="title">🤖 ${verb} ${esc(a.title)}</div>
-    <div class="meta">${timeAgo(a.ts)}${a.undone?" · undone":""}</div></div>
+    <div class="meta">${timeAgo(a.ts)}${a.success?"":" · failed"}${a.undone?" · undone":""}</div></div>
     ${a.undone?"":`<div class="btns"><button class="undo" onclick='act({action:"undo",activity_id:${Number(a.activity_id)}})'>Undo</button></div>`}
   </div>`;
 }

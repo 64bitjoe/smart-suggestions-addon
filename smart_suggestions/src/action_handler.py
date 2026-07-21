@@ -109,8 +109,10 @@ class ActionHandler:
         entry = await self._ledger.get_activity(activity_id)
         if entry is None or entry["undone"]:
             return  # idempotent
+        # Reversing a FAILED autorun could toggle a device the user set
+        # manually — a failed run only demotes.
         service = reverse_service(entry["act_action"])
-        if service:
+        if service and entry.get("success", 1):
             await self._ha.call_service(
                 "homeassistant", service, entry["act_entity"]
             )
@@ -142,7 +144,8 @@ class ActionHandler:
         # Log even on failure (spec): the window fired; undo of a failed run
         # simply demotes.
         await self._ledger.add_activity(
-            now.timestamp(), row["signature"], act_entity, act_action
+            now.timestamp(), row["signature"], act_entity, act_action,
+            success=ok,
         )
         if ok:
             await self._ledger.record_run(row["signature"])

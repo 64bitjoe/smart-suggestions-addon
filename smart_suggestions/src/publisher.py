@@ -64,6 +64,7 @@ def build_activity_payload(entry: dict) -> dict:
         "act_entity": entry["act_entity"],
         "act_action": entry["act_action"],
         "undone": entry["undone"],
+        "success": entry.get("success", 1),
         "signature": entry["signature"],
     }
 

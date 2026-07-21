@@ -72,6 +72,6 @@ def test_activity_payload_shape():
         "act_entity": "light.porch", "act_action": "turn_on", "undone": 0,
     })
     assert set(p.keys()) == {"activity_id", "ts", "title", "act_entity",
-                             "act_action", "undone", "signature"}
+                             "act_action", "undone", "success", "signature"}
     assert p["activity_id"] == 7
     assert "porch" in p["title"].lower()  # fallback title from entity

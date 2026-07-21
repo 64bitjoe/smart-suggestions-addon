@@ -13,7 +13,7 @@ class StubLedger:
         return [r for r in self.rows if r["lifecycle"] in lifecycles]
     async def autoruns_since(self, ts):
         return self.autoruns + len(self.activity)
-    async def add_activity(self, ts, sig, e, a):
+    async def add_activity(self, ts, sig, e, a, success=True):
         self.activity.append(sig); return len(self.activity)
     async def record_run(self, sig): pass
     async def recent_activity(self, since_ts, limit=15): return []

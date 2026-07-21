@@ -84,7 +84,7 @@ class SmartSuggestionsCard extends HTMLElement {
         <ha-icon class="mi" icon="mdi:robot"></ha-icon>
         <div class="text">
           <div class="title">${verb} ${esc(a.title)}</div>
-          <div class="desc">${timeAgo(a.ts)}${a.undone ? " · undone" : ""}</div>
+          <div class="desc">${timeAgo(a.ts)}${a.success ? "" : " · failed"}${a.undone ? " · undone" : ""}</div>
         </div>
         ${a.undone ? "" :
           `<div class="btns"><button class="undo" data-aid="${a.activity_id}">Undo</button></div>`}

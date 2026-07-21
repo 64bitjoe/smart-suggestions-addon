@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS activity (
     signature TEXT NOT NULL,
     act_entity TEXT NOT NULL,
     act_action TEXT NOT NULL,
-    undone INTEGER NOT NULL DEFAULT 0
+    undone INTEGER NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 1
 )
 """
 
@@ -64,6 +65,13 @@ class PatternLedger:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(_SCHEMA)
             await db.execute(_ACTIVITY_SCHEMA)
+            # Migration: pre-4.1.1 activity tables lack the success column.
+            cur = await db.execute("PRAGMA table_info(activity)")
+            cols = {row[1] for row in await cur.fetchall()}
+            if "success" not in cols:
+                await db.execute(
+                    "ALTER TABLE activity ADD COLUMN success INTEGER NOT NULL DEFAULT 1"
+                )
             await db.commit()
 
     async def upsert_evidence(
@@ -293,13 +301,14 @@ class PatternLedger:
             return cur.rowcount > 0
 
     async def add_activity(
-        self, ts: float, signature: str, act_entity: str, act_action: str
+        self, ts: float, signature: str, act_entity: str, act_action: str,
+        success: bool = True,
     ) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
-                "INSERT INTO activity (ts, signature, act_entity, act_action) "
-                "VALUES (?, ?, ?, ?)",
-                (ts, signature, act_entity, act_action),
+                "INSERT INTO activity (ts, signature, act_entity, act_action, success) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (ts, signature, act_entity, act_action, int(success)),
             )
             await db.commit()
             return cur.lastrowid
