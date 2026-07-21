@@ -43,6 +43,7 @@ _OPTIONS_FILE = "/data/options.json"
 _CARD_SRC = "/app/card/smart-suggestions-card.js"
 _CARD_DST = "/config/www/smart-suggestions-card.js"
 _RECORDER_DB = "/config/home-assistant_v2.db"
+ADDON_VERSION = "4.1.1"  # keep in sync with config.yaml
 
 # Miners emit permissively; the ledger's adaptive lifecycle decides.
 MINE_MIN_OCCURRENCES = 2
@@ -372,7 +373,7 @@ class SmartSuggestionsAddon:
             self._ws_server.set_stats({
                 "counts": counts,
                 "last_mining": self._last_mining_summary,
-                "version": "4.1.0",
+                "version": ADDON_VERSION,
             })
         await self._ws_server.broadcast_zones()
 
