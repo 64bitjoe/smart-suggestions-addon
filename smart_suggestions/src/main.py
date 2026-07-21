@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import Counter
 import shutil
 import signal
@@ -169,27 +170,59 @@ class SmartSuggestionsAddon:
             return None
         return sorted((self._domains - {"binary_sensor"}) | self._TRIGGER_DOMAINS)
 
-    @staticmethod
-    def _dedup_mirrors(candidates: list) -> list:
+    _SUFFIX_RE = re.compile(r"_\d+$")
+
+    async def _dedup_mirrors(self, candidates: list) -> list:
         """A switch_as_x wrapper mirrors every state change of its source, so
-        light.X and switch.X mine identical patterns. Keep one per
-        (object_id, action, pattern identity), preferring the light wrapper
-        (that's the entity the user actually sees)."""
-        chosen: dict = {}
+        light.X and switch.X mine identical patterns — and the registry often
+        renames one side (switch.X_2 vs light.X). Group by suffix-normalized
+        object_id + action + pattern identity; collapse a light/switch pair to
+        the light when the object ids match exactly OR the two entities share
+        a registry device (template API lookup, only for suffix-renamed
+        pairs)."""
+        groups: dict = {}
         for c in candidates:
-            domain, _, object_id = c.entity_id.partition(".")
+            _, _, object_id = c.entity_id.partition(".")
+            norm = self._SUFFIX_RE.sub("", object_id)
             identity = json.dumps(
                 {k: sorted(v) if isinstance(v, list) else v
                  for k, v in c.details.items()},
                 sort_keys=True, default=str,
             )
-            key = (object_id, c.action, c.miner_type.value, identity)
-            prev = chosen.get(key)
-            if prev is None or (
-                domain == "light" and prev.entity_id.startswith("switch.")
-            ):
-                chosen[key] = c
-        return list(chosen.values())
+            groups.setdefault(
+                (norm, c.action, c.miner_type.value, identity), []
+            ).append(c)
+
+        out: list = []
+        for group in groups.values():
+            if len(group) == 1:
+                out.extend(group)
+                continue
+            lights = [c for c in group if c.entity_id.startswith("light.")]
+            switches = [c for c in group if c.entity_id.startswith("switch.")]
+            out.extend(
+                c for c in group if c not in lights and c not in switches
+            )
+            if not (lights and switches):
+                out.extend(lights + switches)
+                continue
+            out.extend(lights)
+            for sw in switches:
+                sw_obj = sw.entity_id.split(".", 1)[1]
+                absorbed = False
+                for li in lights:
+                    li_obj = li.entity_id.split(".", 1)[1]
+                    if sw_obj == li_obj:
+                        absorbed = True
+                        break
+                    dev_sw = await self._ha.get_device_id(sw.entity_id)
+                    dev_li = await self._ha.get_device_id(li.entity_id)
+                    if dev_sw and dev_li and dev_sw == dev_li:
+                        absorbed = True
+                        break
+                if not absorbed:
+                    out.append(sw)
+        return out
 
     def _expand_exclusions(self, automated: set[str]) -> set[str]:
         """Grow the automated-entity set with group members and the
@@ -247,7 +280,7 @@ class SmartSuggestionsAddon:
             except Exception:
                 _LOGGER.exception("miner failed — continuing")
 
-        candidates = self._dedup_mirrors(candidates)
+        candidates = await self._dedup_mirrors(candidates)
         ingested = 0
         for c in candidates:
             if c.action not in KNOWN_ACTIONS:

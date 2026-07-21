@@ -293,6 +293,23 @@ class HAClient:
             _LOGGER.error("create_automation failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    async def get_device_id(self, entity_id: str) -> str | None:
+        """Registry device id for an entity via the template API, or None."""
+        if not self._session:
+            return None
+        try:
+            async with self._session.post(
+                f"{self._base}/template",
+                json={"template": "{{ device_id('%s') | to_json }}" % entity_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                val = json.loads(await resp.text())
+                return val if isinstance(val, str) and val else None
+        except Exception:
+            return None
+
     async def get_timezone(self) -> str | None:
         """HA-configured timezone name from GET /config, or None."""
         if not self._session:

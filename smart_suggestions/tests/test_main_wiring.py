@@ -93,3 +93,48 @@ async def test_unmapped_action_falls_back_to_suggestion():
     await addon.match_once()
     assert ha.calls == []
     assert [r["signature"] for r in addon._now_items] == ["d"]
+
+
+class StubHADevices(StubHA):
+    def __init__(self, device_map):
+        super().__init__()
+        self._devices = device_map
+    async def get_device_id(self, entity_id):
+        return self._devices.get(entity_id)
+
+
+async def test_dedup_mirrors_renamed_pair_same_device():
+    from candidate import Candidate, MinerType
+    addon = SmartSuggestionsAddon({})
+    addon._ha = StubHADevices({
+        "light.third_reality": "devA",
+        "switch.third_reality_2": "devA",
+        "light.other": "devB",
+    })
+    mk = lambda eid: Candidate(
+        miner_type=MinerType.TEMPORAL, entity_id=eid, action="turn_on",
+        details={"hour": 9, "minute": 3, "weekdays": [1, 2, 3]},
+        occurrences=4, conditional_prob=0.7,
+    )
+    out = await addon._dedup_mirrors(
+        [mk("light.third_reality"), mk("switch.third_reality_2"), mk("light.other")]
+    )
+    ids = sorted(c.entity_id for c in out)
+    # Renamed wrapper pair collapses to the light; unrelated entity survives.
+    assert ids == ["light.other", "light.third_reality"]
+
+
+async def test_dedup_mirrors_different_devices_not_collapsed():
+    from candidate import Candidate, MinerType
+    addon = SmartSuggestionsAddon({})
+    addon._ha = StubHADevices({
+        "light.lamp": "devA",
+        "switch.lamp_2": "devC",   # genuinely different device
+    })
+    mk = lambda eid: Candidate(
+        miner_type=MinerType.TEMPORAL, entity_id=eid, action="turn_on",
+        details={"hour": 9, "minute": 3, "weekdays": [1]},
+        occurrences=4, conditional_prob=0.7,
+    )
+    out = await addon._dedup_mirrors([mk("light.lamp"), mk("switch.lamp_2")])
+    assert len(out) == 2
