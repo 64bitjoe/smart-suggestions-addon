@@ -75,3 +75,28 @@ def test_activity_payload_shape():
                              "act_action", "undone", "success", "signature"}
     assert p["activity_id"] == 7
     assert "porch" in p["title"].lower()  # fallback title from entity
+
+
+def test_sequence_row_resolves_act_target():
+    # Ledger-fed sequence rows have no act_entity: the payload must resolve
+    # the TARGET, and can_promote must be judged against the target's domain.
+    row = {
+        "signature": "seq1", "miner_type": "sequence",
+        "entity_id": "light.hall", "action": "turn_on",
+        "details_json": json.dumps({"target_entity": "lock.front_door",
+                                    "target_action": "turn_on",
+                                    "delta_seconds": 30}),
+        "occurrences": 9, "conditional_prob": 0.9,
+        "title": "t", "description": "d",
+        "lifecycle": "confirmed", "accepted_runs": 5, "dismiss_count": 0,
+    }
+    p = build_payload(row, zone="discoveries")
+    assert p["act_entity"] == "lock.front_door"
+    assert p["can_promote"] is False  # lock target can never auto-run
+
+    row["details_json"] = json.dumps({"target_entity": "light.stairs",
+                                      "target_action": "turn_on",
+                                      "delta_seconds": 30})
+    p2 = build_payload(row, zone="discoveries")
+    assert p2["act_entity"] == "light.stairs"
+    assert p2["can_promote"] is True
